@@ -5,7 +5,7 @@ import { generateId, now } from '@/utils/formatters';
 import { supabase } from '@/lib/supabase';
 import { fetchBranches, upsertBranch, fetchUsers, upsertUser, deleteUserRemote, deleteBranchRemote, fetchCompanySettings, saveCompanySettings } from '@/services/supabaseService';
 
-interface AuthState {
+export interface AuthState {
   users: User[];
   branches: Branch[];
   currentUser: User | null;
@@ -16,7 +16,7 @@ interface AuthState {
   loadCompanySettings: () => Promise<void>;
   saveCompanySettingsDB: (settings: CompanySettings) => Promise<void>;
   loginAdmin: (username: string, password: string) => Promise<boolean>;
-  loginCashier: (userId: string, code: string, branchId: string) => boolean;
+  loginCashier: (userId: string, code: string, branchId: string) => Promise<boolean>;
   logout: () => void;
   addUser: (user: Omit<User, 'id' | 'createdAt'>) => Promise<void>;
   updateUser: (id: string, updates: Partial<User>) => Promise<void>;
@@ -28,6 +28,10 @@ interface AuthState {
   updateBranch: (id: string, updates: Partial<Branch>) => Promise<void>;
   deleteBranch: (id: string) => Promise<void>;
   setOpeningAmount: (amount: number) => void;
+  /** Verifica si el rol actual tiene al menos un permiso. */
+  hasRole: (minRole: User['role']) => boolean;
+  /** Lista de roles válidos para crear nuevos usuarios. */
+  availableRoles: { value: User['role']; label: string }[];
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -61,8 +65,10 @@ export const useAuthStore = create<AuthState>()(
           if (remoteBranches.length > 0) set({ branches: remoteBranches });
         } catch { /* continue */ }
 
+        // Admin login: permite admin y manager
+        const adminRoles: User['role'][] = ['admin', 'manager'];
         const mockUser = get().users.find(
-          (u) => u.role === 'admin' && u.username === username && u.password === password && u.isActive
+          (u) => adminRoles.includes(u.role) && u.username === username && u.password === password && u.isActive
         );
         if (!mockUser) return false;
 
@@ -76,19 +82,15 @@ export const useAuthStore = create<AuthState>()(
         let realUserId = mockUser.id;
 
         if (!authError && authData.user) {
-          // Use the real Supabase Auth UUID
           realUserId = authData.user.id;
-
-          // Upsert into usuarios_farmacia with the real auth UUID
           await supabase.from('usuarios_farmacia').upsert({
             id: realUserId,
             nombre: mockUser.name,
             email,
-            rol: 'admin',
+            rol: mockUser.role,
             activo: true,
           }, { onConflict: 'id' });
         } else {
-          // Supabase Auth not set up yet — try to sign up first
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
             email,
             password,
@@ -99,26 +101,30 @@ export const useAuthStore = create<AuthState>()(
               id: realUserId,
               nombre: mockUser.name,
               email,
-              rol: 'admin',
+              rol: mockUser.role,
               activo: true,
             }, { onConflict: 'id' });
           }
-          // If signup also fails, fall back to mock UUID (already valid)
         }
 
         const userWithRealId: User = { ...mockUser, id: realUserId };
-        // Use freshBranches from Supabase to ensure correct IDs
         const branchList = freshBranches.length > 0 ? freshBranches : get().branches;
         const branch = branchList.find((b) => b.isActive) ?? null;
         set({ currentUser: userWithRealId, currentBranch: branch, isAuthenticated: true });
         return true;
       },
 
-      loginCashier: (userId, code, branchId) => {
-        const user = get().users.find((u) => u.id === userId && u.accessCode === code && u.isActive);
-        // Find branch by ID from Supabase-loaded branches (ensures correct UUID)
+      loginCashier: async (userId, code, branchId) => {
+        // Cashier login: permite cashier y supervisor (supervisor puede cobrar también)
+        const cashierRoles: User['role'][] = ['cashier', 'supervisor'];
+        const user = get().users.find((u) => u.id === userId && cashierRoles.includes(u.role) && u.accessCode === code && u.isActive);
         const branch = get().branches.find((b) => b.id === branchId && b.isActive) ?? null;
         if (user && branch) {
+          try {
+            await upsertUser(user);
+          } catch (syncErr) {
+            console.warn('[auth] Error sincronizando cajero con Supabase:', syncErr);
+          }
           set({ currentUser: user, currentBranch: branch, isAuthenticated: true });
           return true;
         }
@@ -127,7 +133,6 @@ export const useAuthStore = create<AuthState>()(
 
       logout: () => {
         supabase.auth.signOut().catch(() => {});
-        // Clear POS persisted storage so everything starts fresh
         try {
           localStorage.removeItem('genosan-pos');
         } catch (_) { /* ignore */ }
@@ -135,11 +140,8 @@ export const useAuthStore = create<AuthState>()(
       },
 
       updateUserAvatarRemote: async (id: string, avatarUrl: string) => {
-        // Save to Supabase
         await supabase.from('usuarios_farmacia').update({ avatar_url: avatarUrl }).eq('id', id);
-        // Update local state
         set((s) => ({ users: s.users.map((u) => (u.id === id ? { ...u, avatar: avatarUrl } : u)) }));
-        // Update currentUser if it's the same
         const { currentUser } = get();
         if (currentUser?.id === id) {
           set({ currentUser: { ...currentUser, avatar: avatarUrl } });
@@ -148,21 +150,18 @@ export const useAuthStore = create<AuthState>()(
 
       changeAdminPassword: async (currentPassword: string, newPassword: string): Promise<{ success: boolean; error?: string }> => {
         const { currentUser } = get();
-        if (!currentUser || currentUser.role !== 'admin') {
-          return { success: false, error: 'Solo el administrador puede cambiar la contraseña' };
+        if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'manager')) {
+          return { success: false, error: 'Solo el administrador o gerente puede cambiar la contraseña' };
         }
-        // Re-authenticate first
         const email = `${currentUser.username}@genosan.com`;
         const { error: signInError } = await supabase.auth.signInWithPassword({ email, password: currentPassword });
         if (signInError) {
           return { success: false, error: 'Contraseña actual incorrecta' };
         }
-        // Update password
         const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
         if (updateError) {
           return { success: false, error: updateError.message };
         }
-        // Update mock user password too
         set((s) => ({
           users: s.users.map((u) => (u.id === currentUser.id ? { ...u, password: newPassword } : u)),
         }));
@@ -171,12 +170,41 @@ export const useAuthStore = create<AuthState>()(
 
       setOpeningAmount: (amount) => set({ openingAmount: amount }),
 
+      hasRole: (minRole) => {
+        const { currentUser } = get();
+        if (!currentUser) return false;
+        const hierarchy: Record<User['role'], number> = {
+          admin: 4,
+          manager: 3,
+          supervisor: 2,
+          cashier: 1,
+        };
+        return hierarchy[currentUser.role] >= hierarchy[minRole];
+      },
+
+      availableRoles: [
+        { value: 'admin', label: 'Administrador' },
+        { value: 'manager', label: 'Gerente' },
+        { value: 'supervisor', label: 'Supervisor' },
+        { value: 'cashier', label: 'Cajero' },
+      ],
+
       addUser: async (userData) => {
-        const newUser: User = { ...userData, id: generateId(), createdAt: now() };
+        // Validar que el rol sea uno de los permitidos
+        const validRoles: User['role'][] = ['admin', 'manager', 'supervisor', 'cashier'];
+        const role = validRoles.includes(userData.role) ? userData.role : 'cashier';
+        const newUser: User = { ...userData, role, id: generateId(), createdAt: now() };
         set((s) => ({ users: [...s.users, newUser] }));
         await upsertUser(newUser).catch(() => {});
       },
       updateUser: async (id, updates) => {
+        // Si se actualiza el rol, sanitizar
+        if (updates.role) {
+          const validRoles: User['role'][] = ['admin', 'manager', 'supervisor', 'cashier'];
+          if (!validRoles.includes(updates.role)) {
+            updates.role = 'cashier';
+          }
+        }
         set((s) => ({ users: s.users.map((u) => (u.id === id ? { ...u, ...updates } : u)) }));
         const updated = get().users.find((u) => u.id === id);
         if (updated) await upsertUser(updated).catch(() => {});

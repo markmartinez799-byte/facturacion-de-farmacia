@@ -458,24 +458,75 @@ export default function ProductoModal({ product, onClose }: Props) {
                 {errors.purchaseCost && <p className="text-xs text-red-500 mt-1">{errors.purchaseCost}</p>}
               </div>
 
-              {/* Precio de venta */}
-              <div>
-                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">
-                  Precio de Venta Unitario <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-mono">RD$</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={form.price}
-                    onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))}
-                    placeholder="0.00"
-                    className={`w-full pl-10 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono ${errors.price ? 'border-red-400' : isLoss() ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
-                  />
+              {/* Precio de venta + Margen lado a lado */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">
+                    Precio de Venta Unitario <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-mono">RD$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      value={form.price}
+                      onChange={(e) => handlePriceChange(e.target.value)}
+                      placeholder="0.00"
+                      className={`w-full pl-10 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono ${errors.price ? 'border-red-400' : isLoss() ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
+                    />
+                  </div>
+                  {errors.price && <p className="text-xs text-red-500 mt-1">{errors.price}</p>}
                 </div>
-                {errors.price && <p className="text-xs text-red-500 mt-1">{errors.price}</p>}
+
+                <div>
+                  <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block flex items-center justify-between">
+                    <span>Margen de Ganancia</span>
+                    <span className={`text-xs font-bold ${getMarginColor()}`}>{marginNum.toFixed(1)}%</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-mono">%</span>
+                    <input
+                      type="number"
+                      min={-100}
+                      step={0.1}
+                      value={form.marginPercent}
+                      onChange={(e) => handleMarginChange(e.target.value)}
+                      placeholder="30"
+                      className={`w-full pl-8 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono ${marginNum < 0 ? 'border-red-300' : marginNum < 10 ? 'border-amber-300' : 'border-slate-200 dark:border-slate-700'}`}
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    {form.autoCalcPrice
+                      ? 'El precio se calcula automáticamente desde el costo y este margen.'
+                      : 'Editá el margen para recalcular el precio, o editá el precio para ver el margen resultante.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Toggle auto-calcular */}
+              <div
+                className={`p-3 border rounded-xl cursor-pointer transition-all flex items-center gap-3 ${form.autoCalcPrice ? 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'}`}
+                onClick={() => {
+                  const next = !form.autoCalcPrice;
+                  setForm((f) => ({ ...f, autoCalcPrice: next }));
+                  if (next) {
+                    const costNum = parseFloat(form.purchaseCost) || 0;
+                    const marginNum = parseFloat(form.marginPercent) || 0;
+                    if (costNum > 0) {
+                      const newPrice = costNum * (1 + marginNum / 100);
+                      setForm((f) => ({ ...f, autoCalcPrice: true, price: newPrice.toFixed(2) }));
+                    }
+                  }
+                }}
+              >
+                <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${form.autoCalcPrice ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 dark:border-slate-600'}`}>
+                  {form.autoCalcPrice && <i className="ri-check-line text-white text-xs"></i>}
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-slate-800 dark:text-white">Auto-calcular precio desde margen</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Cada vez que cambies el costo o el margen, el precio de venta se actualizará automáticamente.</p>
+                </div>
               </div>
 
               {/* Precio mayorista */}
@@ -508,7 +559,7 @@ export default function ProductoModal({ product, onClose }: Props) {
               {purchaseCostNum > 0 && priceNum > 0 && (
                 <div className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Resumen de Precios</p>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-4 gap-3">
                     <div className="text-center">
                       <p className="text-xs text-slate-400 mb-1">Costo</p>
                       <p className="text-base font-bold font-mono text-slate-700 dark:text-slate-200">RD${purchaseCostNum.toFixed(2)}</p>
@@ -518,11 +569,21 @@ export default function ProductoModal({ product, onClose }: Props) {
                       <p className="text-base font-bold font-mono text-slate-700 dark:text-slate-200">RD${priceNum.toFixed(2)}</p>
                     </div>
                     <div className="text-center">
+                      <p className="text-xs text-slate-400 mb-1">Margen</p>
+                      <p className={`text-base font-bold font-mono ${getMarginColor()}`}>{marginNum.toFixed(1)}%</p>
+                    </div>
+                    <div className="text-center">
                       <p className="text-xs text-slate-400 mb-1">Precio +ITBIS</p>
                       <p className="text-base font-bold font-mono text-amber-600">
                         {form.itbisApplicable ? `RD$${itbisPrice.toFixed(2)}` : '—'}
                       </p>
                     </div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center">
+                    <span className="text-xs text-slate-500">Ganancia por unidad:</span>
+                    <span className={`text-sm font-bold font-mono ${profitUnit < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                      RD${profitUnit.toFixed(2)}
+                    </span>
                   </div>
                 </div>
               )}

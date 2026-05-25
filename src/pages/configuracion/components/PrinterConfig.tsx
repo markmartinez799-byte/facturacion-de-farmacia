@@ -1,97 +1,133 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAppStore } from '@/store/appStore';
+import {
+  printTestPage, getSystemPrinters, checkPrinterStatus,
+  hasElectronBridge, clearPrinterCache,
+  getPrinterBridgeStatus, isElectronButMissingBridge,
+} from '@/services/printService';
+import type { PrintMode } from '@/store/appStore';
 
 type PrinterType = '58mm' | '80mm' | 'A4';
 type FontSize = 'small' | 'medium' | 'large';
+
+const MODE_LABELS: Record<PrintMode, { label: string; desc: string; icon: string; color: string }> = {
+  auto: {
+    label: 'Impresión automática',
+    desc: 'Imprime directamente al completar cada venta sin preguntar',
+    icon: 'ri-flashlight-fill',
+    color: 'emerald',
+  },
+  ask: {
+    label: 'Preguntar antes de imprimir',
+    desc: 'Muestra una opción en el checkout para decidir si imprimir o no',
+    icon: 'ri-questionnaire-fill',
+    color: 'amber',
+  },
+  never: {
+    label: 'No imprimir automáticamente',
+    desc: 'Solo registra la factura en el sistema sin imprimir físicamente',
+    icon: 'ri-forbid-line',
+    color: 'slate',
+  },
+};
 
 export default function PrinterConfig() {
   const { settings, printerSettings, updatePrinterSettings } = useAppStore();
   const [testStatus, setTestStatus] = useState<'idle' | 'printing' | 'success' | 'error'>('idle');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
-  const [manualName, setManualName] = useState('');
-  const [showManualInput, setShowManualInput] = useState(false);
-  const [printerReady, setPrinterReady] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [printers, setPrinters] = useState<{ name: string; isDefault: boolean; status?: number; description?: string }[]>([]);
+  const [printerStatus, setPrinterStatus] = useState<{ connected: boolean; status: string } | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [showPrinterDropdown, setShowPrinterDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Al montar, verificar si ya hay una impresora guardada
+  const isElectron = hasElectronBridge();
+  const bridgeStatus = getPrinterBridgeStatus();
+  const missingPreload = isElectronButMissingBridge();
+  const currentMode = printerSettings.printMode || 'auto';
+  const modeInfo = MODE_LABELS[currentMode];
+
+  // Cargar impresoras al montar
   useEffect(() => {
-    if (printerSettings.printerName && printerSettings.printerName !== '') {
-      setPrinterReady(true);
-    }
+    loadPrinters();
+  }, []);
+
+  // Detectar clic fuera del dropdown
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowPrinterDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Verificar estado de la impresora seleccionada
+  useEffect(() => {
+    const check = async () => {
+      if (printerSettings.printerName) {
+        const status = await checkPrinterStatus(printerSettings.printerName);
+        setPrinterStatus(status);
+      } else {
+        setPrinterStatus(null);
+      }
+    };
+    check();
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
   }, [printerSettings.printerName]);
 
-  // Abrir diálogo de impresión del sistema para que el usuario vea sus impresoras
-  const openSystemPrinterDialog = () => {
-    const paperWidth =
-      printerSettings.printerType === '58mm' ? '58mm' :
-      printerSettings.printerType === '80mm' ? '80mm' : '210mm';
-
-    const fontSize =
-      printerSettings.fontSize === 'small' ? '10px' :
-      printerSettings.fontSize === 'large' ? '14px' : '12px';
-
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Seleccionar Impresora</title>
-  <style>
-    @page { size: ${paperWidth} auto; margin: 4mm; }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Courier New', monospace; font-size: ${fontSize}; width: ${paperWidth === '210mm' ? '190mm' : paperWidth}; color: #000; }
-    .center { text-align: center; }
-    .bold { font-weight: bold; }
-    .divider { border-top: 1px dashed #000; margin: 4px 0; }
-    .row { display: flex; justify-content: space-between; }
-  </style>
-</head>
-<body>
-  ${printerSettings.printLogo ? `<div class="center bold" style="font-size:15px">${settings.name}</div>` : ''}
-  <div class="center">${settings.address || 'Dirección de la farmacia'}</div>
-  <div class="center">Tel: ${settings.phone || '000-000-0000'}</div>
-  <div class="center">RNC: ${settings.rnc || '000-00000-0'}</div>
-  <div class="divider"></div>
-  <div class="center bold">*** PÁGINA DE PRUEBA ***</div>
-  <div class="divider"></div>
-  <div class="row"><span>Tipo papel:</span><span>${printerSettings.printerType}</span></div>
-  <div class="row"><span>Copias:</span><span>${printerSettings.copies}</span></div>
-  <div class="row"><span>Fecha:</span><span>${new Date().toLocaleDateString('es-DO')}</span></div>
-  <div class="row"><span>Hora:</span><span>${new Date().toLocaleTimeString('es-DO')}</span></div>
-  <div class="divider"></div>
-  <div class="row"><span>Amoxicilina 500mg x2</span><span>RD$180.00</span></div>
-  <div class="row"><span>Ibuprofeno 400mg x1</span><span>RD$95.00</span></div>
-  <div class="divider"></div>
-  <div class="row bold"><span>TOTAL:</span><span>RD$275.00</span></div>
-  <div class="divider"></div>
-  ${printerSettings.printFooter ? `<div class="center">${printerSettings.footerText}</div>` : ''}
-  <div class="center" style="margin-top:8px;font-size:9px">Sistema Farmacia GENOSAN</div>
-</body>
-</html>`;
-
-    const win = window.open('', '_blank', 'width=500,height=700');
-    if (!win) {
-      setTestStatus('error');
-      setTimeout(() => setTestStatus('idle'), 3000);
-      return;
+  const loadPrinters = useCallback(async () => {
+    setIsScanning(true);
+    try {
+      const list = await getSystemPrinters();
+      setPrinters(list);
+      // Si hay una impresora predeterminada del sistema y no hay una configurada, usarla
+      const defaultPrinter = list.find((p) => p.isDefault);
+      if (defaultPrinter && !printerSettings.printerName) {
+        updatePrinterSettings({ printerName: defaultPrinter.name });
+      }
+    } catch {
+      setPrinters([]);
+    } finally {
+      setIsScanning(false);
     }
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    // Esperar a que cargue y luego imprimir
-    win.onload = () => {
-      win.print();
-      win.close();
-    };
-    // Fallback si onload no dispara
-    setTimeout(() => {
-      try { win.print(); win.close(); } catch { /* ya cerró */ }
-    }, 800);
+  }, [printerSettings.printerName, updatePrinterSettings]);
+
+  const handleSelectPrinter = (name: string) => {
+    updatePrinterSettings({ printerName: name });
+    clearPrinterCache();
+    setShowPrinterDropdown(false);
+    setSaveStatus('saved');
+    setTimeout(() => setSaveStatus('idle'), 2500);
+    // Re-verificar estado
+    checkPrinterStatus(name).then(setPrinterStatus);
   };
 
-  const handleTestPrint = () => {
+  const handleRemovePrinter = () => {
+    updatePrinterSettings({ printerName: '' });
+    clearPrinterCache();
+    setPrinterStatus(null);
+    setSaveStatus('saved');
+    setTimeout(() => setSaveStatus('idle'), 2500);
+  };
+
+  const handleTestPrint = async () => {
     setTestStatus('printing');
     try {
-      openSystemPrinterDialog();
+      await printTestPage(
+        {
+          companyName: settings.name || 'FARMACIA GENOSAN',
+          address: settings.address,
+          phone: settings.phone,
+          rnc: settings.rnc,
+          printerType: printerSettings.printerType as '58mm' | '80mm' | 'A4',
+          fontSize: printerSettings.fontSize as 'small' | 'medium' | 'large',
+          footerText: printerSettings.footerText,
+        },
+        printerSettings.printerName
+      );
       setTestStatus('success');
       setTimeout(() => setTestStatus('idle'), 3000);
     } catch {
@@ -100,45 +136,111 @@ export default function PrinterConfig() {
     }
   };
 
-  const handleSavePrinter = () => {
-    const name = manualName.trim();
-    if (!name) return;
-    updatePrinterSettings({ printerName: name });
-    setPrinterReady(true);
-    setShowManualInput(false);
-    setManualName('');
-    setSaveStatus('saved');
-    setTimeout(() => setSaveStatus('idle'), 2500);
-  };
-
   const handleSave = () => {
     setSaveStatus('saved');
     setTimeout(() => setSaveStatus('idle'), 2500);
   };
 
-  const handleRemovePrinter = () => {
-    updatePrinterSettings({ printerName: '' });
-    setPrinterReady(false);
+  const statusBadge = () => {
+    if (!isElectron) {
+      return (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+          <i className="ri-error-warning-line text-sm" />
+          Sin bridge nativo — se abrirá diálogo
+        </span>
+      );
+    }
+    if (!printerSettings.printerName) {
+      return (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+          <i className="ri-error-warning-line text-sm" />
+          Sin impresora configurada
+        </span>
+      );
+    }
+    if (!printerStatus) {
+      return (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-full">
+          <i className="ri-loader-2-line animate-spin text-sm" />
+          Verificando...
+        </span>
+      );
+    }
+    if (printerStatus.connected) {
+      return (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+          <i className="ri-checkbox-circle-fill text-sm" />
+          {printerStatus.status === 'lista' ? 'Conectada y lista' : `Estado: ${printerStatus.status}`}
+        </span>
+      );
+    }
+    return (
+      <span className="flex items-center gap-1.5 text-xs font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-full">
+        <i className="ri-error-warning-line text-sm" />
+        {printerStatus.status === 'desconectada' ? 'Impresora desconectada' : `Error: ${printerStatus.status}`}
+      </span>
+    );
   };
 
   return (
     <div className="space-y-6">
 
-      {/* Banner informativo */}
-      <div className="flex items-start gap-3 p-4 rounded-xl border bg-blue-50 border-blue-200">
+      {/* Banner de modo actual */}
+      <div className={`flex items-start gap-3 p-4 rounded-xl border bg-${modeInfo.color}-50 border-${modeInfo.color}-200`}>
         <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 mt-0.5">
-          <i className="ri-information-line text-blue-600 text-lg" />
+          <i className={`${modeInfo.icon} text-${modeInfo.color}-600 text-lg`} />
         </div>
         <div className="flex-1">
-          <p className="text-sm font-semibold text-blue-700">¿Cómo funciona la impresión?</p>
-          <p className="text-xs text-blue-600 mt-0.5">
-            Al imprimir, el sistema abre el diálogo de impresión de tu sistema operativo donde puedes seleccionar cualquier impresora instalada.
-            Guarda el nombre de tu impresora predeterminada para referencia.
+          <p className="text-sm font-semibold text-slate-700">
+            Modo activo: <span className={`text-${modeInfo.color}-700`}>{modeInfo.label}</span>
+          </p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {modeInfo.desc}
           </p>
         </div>
       </div>
 
-      {/* Impresora configurada */}
+      {/* Diagnóstico del bridge de impresión */}
+      {missingPreload ? (
+        <div className="flex items-start gap-3 p-4 rounded-xl border bg-red-50 border-red-200">
+          <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <i className="ri-error-warning-line text-red-600 text-lg" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-red-700">Falta el preload de Electron</p>
+            <p className="text-xs text-red-600 mt-0.5">
+              La app corre en Electron pero no se detectó <code>window.electronAPI</code>.
+              Para imprimir sin diálogo, copiá el código de <strong>ELECTRON_SETUP.md</strong> en tu <code>preload.js</code> y <code>main.js</code>.
+            </p>
+          </div>
+        </div>
+      ) : bridgeStatus.ok ? (
+        <div className="flex items-start gap-3 p-4 rounded-xl border bg-emerald-50 border-emerald-200">
+          <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <i className="ri-checkbox-circle-line text-emerald-600 text-lg" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-emerald-700">{bridgeStatus.label}</p>
+            <p className="text-xs text-emerald-600 mt-0.5">{bridgeStatus.detail}</p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3 p-4 rounded-xl border bg-amber-50 border-amber-200">
+          <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <i className="ri-error-warning-line text-amber-600 text-lg" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-700">{bridgeStatus.label}</p>
+            <p className="text-xs text-amber-600 mt-0.5">{bridgeStatus.detail}</p>
+            {bridgeStatus.action && (
+              <p className="text-xs text-amber-700 mt-1 font-medium">{bridgeStatus.action}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+
+      {/* Selector de impresora */}
       <div className="bg-white rounded-xl p-6 border border-slate-200 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-slate-800 flex items-center gap-2">
@@ -147,115 +249,129 @@ export default function PrinterConfig() {
             </div>
             Impresora Predeterminada
           </h3>
-          {printerReady && (
-            <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
-              <i className="ri-checkbox-circle-fill text-sm" />
-              Configurada
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {printerStatus?.connected && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+                <i className="ri-wifi-line text-sm" />
+                Conectada
+              </span>
+            )}
+            {printerStatus && !printerStatus.connected && (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-rose-600 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-full">
+                <i className="ri-wifi-off-line text-sm" />
+                Desconectada
+              </span>
+            )}
+          </div>
         </div>
 
-        {/* Estado actual */}
-        <div className={`flex items-center gap-4 p-4 rounded-xl border ${
-          printerReady
-            ? 'bg-emerald-50 border-emerald-200'
-            : 'bg-slate-50 border-slate-200'
-        }`}>
-          <div className={`w-12 h-12 flex items-center justify-center rounded-xl flex-shrink-0 ${
-            printerReady ? 'bg-emerald-100' : 'bg-slate-100'
+        {/* Estado actual de la impresora seleccionada */}
+        {printerSettings.printerName && (
+          <div className={`flex items-center gap-4 p-4 rounded-xl border ${
+            printerStatus?.connected
+              ? 'bg-emerald-50 border-emerald-200'
+              : printerStatus
+              ? 'bg-rose-50 border-rose-200'
+              : 'bg-slate-50 border-slate-200'
           }`}>
-            <i className={`ri-printer-fill text-2xl ${printerReady ? 'text-emerald-600' : 'text-slate-400'}`} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className={`font-semibold text-sm ${printerReady ? 'text-emerald-800' : 'text-slate-500'}`}>
-              {printerSettings.printerName || 'Sin impresora configurada'}
-            </p>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {printerReady
-                ? 'Lista para imprimir — el diálogo del sistema usará esta impresora'
-                : 'Ingresa el nombre de tu impresora para guardarla'}
-            </p>
-          </div>
-          {printerReady && (
+            <div className={`w-12 h-12 flex items-center justify-center rounded-xl flex-shrink-0 ${
+              printerStatus?.connected ? 'bg-emerald-100' : 'bg-rose-100'
+            }`}>
+              <i className={`ri-printer-fill text-2xl ${printerStatus?.connected ? 'text-emerald-600' : 'text-rose-500'}`} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className={`font-semibold text-sm ${printerStatus?.connected ? 'text-emerald-800' : 'text-rose-700'}`}>
+                {printerSettings.printerName}
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {printerStatus?.connected
+                  ? 'Impresora lista para imprimir tickets automáticamente'
+                  : printerStatus
+                  ? `Error: ${printerStatus.status}. Verificá que esté encendida y conectada.`
+                  : 'Verificando estado de la impresora...'}
+              </p>
+            </div>
             <button
               onClick={handleRemovePrinter}
-              className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+              className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-rose-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
               title="Quitar impresora"
             >
               <i className="ri-close-line text-lg" />
             </button>
+          </div>
+        )}
+
+        {/* Dropdown de selección de impresora */}
+        <div className="relative" ref={dropdownRef}>
+          <button
+            onClick={() => { setShowPrinterDropdown(!showPrinterDropdown); if (!showPrinterDropdown) loadPrinters(); }}
+            className="w-full flex items-center justify-between p-3 rounded-lg border border-slate-200 bg-white hover:border-emerald-400 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <i className="ri-printer-line text-slate-400" />
+              <span className="text-sm text-slate-700">
+                {printerSettings.printerName || 'Seleccionar impresora del sistema...'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {isScanning && <i className="ri-loader-2-line animate-spin text-slate-400" />}
+              <i className={`ri-arrow-down-s-line text-slate-400 transition-transform ${showPrinterDropdown ? 'rotate-180' : ''}`} />
+            </div>
+          </button>
+
+          {showPrinterDropdown && (
+            <div className="absolute z-20 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto">
+              {printers.length === 0 && !isScanning && (
+                <div className="p-4 text-center">
+                  <p className="text-sm text-slate-500">No se encontraron impresoras</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {isElectron
+                      ? 'Verificá que haya impresoras instaladas en Windows'
+                      : 'El navegador no puede acceder a las impresoras del sistema'}
+                  </p>
+                </div>
+              )}
+              {printers.map((printer) => (
+                <button
+                  key={printer.name}
+                  onClick={() => handleSelectPrinter(printer.name)}
+                  className={`w-full flex items-center gap-3 p-3 hover:bg-slate-50 text-left transition-colors cursor-pointer border-b border-slate-100 last:border-0 ${
+                    printerSettings.printerName === printer.name ? 'bg-emerald-50' : ''
+                  }`}
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                    printer.isDefault ? 'bg-emerald-100' : 'bg-slate-100'
+                  }`}>
+                    <i className={`ri-printer-fill ${printer.isDefault ? 'text-emerald-600' : 'text-slate-400'}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-700 truncate">{printer.name}</p>
+                    <p className="text-xs text-slate-400">
+                      {printer.isDefault && <span className="text-emerald-600 font-medium">Predeterminada · </span>}
+                      {printer.description || 'Impresora del sistema'}
+                    </p>
+                  </div>
+                  {printerSettings.printerName === printer.name && (
+                    <i className="ri-check-line text-emerald-600 text-lg" />
+                  )}
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
-        {/* Cómo encontrar el nombre */}
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-          <p className="text-xs font-semibold text-amber-700 mb-1">
-            <i className="ri-lightbulb-line mr-1" />
-            ¿Cómo saber el nombre de tu impresora?
-          </p>
-          <ul className="text-xs text-amber-700 space-y-0.5 list-disc list-inside">
-            <li><strong>Windows:</strong> Panel de control → Dispositivos e impresoras</li>
-            <li><strong>Mac:</strong> Preferencias del sistema → Impresoras y escáneres</li>
-            <li>O haz clic en <strong>"Abrir diálogo de impresión"</strong> y verás el nombre ahí</li>
-          </ul>
-        </div>
-
-        {/* Botones de acción */}
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => {
-              setShowManualInput(!showManualInput);
-              setTimeout(() => inputRef.current?.focus(), 100);
-            }}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <i className="ri-edit-line text-sm" />
-            {printerReady ? 'Cambiar impresora' : 'Ingresar nombre de impresora'}
-          </button>
-          <button
-            onClick={() => {
-              const win = window.open('', '_blank', 'width=400,height=300');
-              if (win) {
-                win.document.write('<html><body><p style="font-family:sans-serif;padding:20px">Abre el diálogo de impresión para ver tus impresoras instaladas.</p></body></html>');
-                win.document.close();
-                win.focus();
-                setTimeout(() => { try { win.print(); } catch { /* ignore */ } }, 300);
-              }
-            }}
-            className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-          >
-            <i className="ri-external-link-line text-sm" />
-            Abrir diálogo de impresión
-          </button>
-        </div>
-
-        {/* Input manual */}
-        {showManualInput && (
-          <div className="flex gap-2 mt-1">
-            <input
-              ref={inputRef}
-              type="text"
-              value={manualName}
-              onChange={(e) => setManualName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSavePrinter(); }}
-              placeholder="Ej: HP LaserJet Pro M404n, Epson TM-T20..."
-              className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white text-slate-800 focus:outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400"
-            />
-            <button
-              onClick={handleSavePrinter}
-              disabled={!manualName.trim()}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-sm font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap"
-            >
-              Guardar
-            </button>
-            <button
-              onClick={() => { setShowManualInput(false); setManualName(''); }}
-              className="px-3 py-2 border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              Cancelar
-            </button>
-          </div>
-        )}
+        {/* Botón reescanear */}
+        <button
+          onClick={loadPrinters}
+          disabled={isScanning}
+          className="flex items-center gap-2 px-4 py-2 border border-slate-200 text-slate-600 text-sm rounded-lg hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50"
+        >
+          {isScanning ? (
+            <><i className="ri-loader-2-line animate-spin" /> Buscando impresoras...</>
+          ) : (
+            <><i className="ri-refresh-line" /> Escanear impresoras del sistema</>
+          )}
+        </button>
       </div>
 
       {/* Configuración de papel y opciones */}
@@ -355,9 +471,9 @@ export default function PrinterConfig() {
 
           <div className="space-y-3">
             {[
-              { key: 'autoPrint', label: 'Imprimir automáticamente al completar venta', desc: 'Sin mostrar diálogo de impresión' },
-              { key: 'printLogo', label: 'Imprimir nombre/logo de la empresa', desc: 'Encabezado con datos de la farmacia' },
-              { key: 'printFooter', label: 'Imprimir mensaje de pie de página', desc: 'Texto personalizable al final del recibo' },
+              { key: 'autoPrint' as const, label: 'Habilitar impresión automática', desc: 'Permite que el sistema envíe a la impresora' },
+              { key: 'printLogo' as const, label: 'Imprimir nombre/logo de la empresa', desc: 'Encabezado con datos de la farmacia' },
+              { key: 'printFooter' as const, label: 'Imprimir mensaje de pie de página', desc: 'Texto personalizable al final del recibo' },
             ].map(({ key, label, desc }) => (
               <div key={key} className="flex items-start justify-between gap-4 p-3 rounded-lg bg-slate-50">
                 <div>
@@ -365,15 +481,15 @@ export default function PrinterConfig() {
                   <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
                 </div>
                 <button
-                  onClick={() => updatePrinterSettings({ [key]: !printerSettings[key as keyof typeof printerSettings] })}
+                  onClick={() => updatePrinterSettings({ [key]: !printerSettings[key] })}
                   className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors cursor-pointer ${
-                    printerSettings[key as keyof typeof printerSettings]
+                    printerSettings[key]
                       ? 'bg-emerald-500'
                       : 'bg-slate-300'
                   }`}
                 >
                   <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                    printerSettings[key as keyof typeof printerSettings] ? 'translate-x-5' : 'translate-x-0'
+                    printerSettings[key] ? 'translate-x-5' : 'translate-x-0'
                   }`} />
                 </button>
               </div>
@@ -445,15 +561,15 @@ export default function PrinterConfig() {
       <div className="flex items-center justify-between">
         <button
           onClick={handleTestPrint}
-          disabled={testStatus === 'printing'}
+          disabled={testStatus === 'printing' || !printerSettings.printerName}
           className="flex items-center gap-2 px-5 py-2.5 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50"
         >
           {testStatus === 'printing' ? (
-            <><i className="ri-loader-4-line animate-spin" /> Abriendo diálogo...</>
+            <><i className="ri-loader-4-line animate-spin" /> Enviando a impresora...</>
           ) : testStatus === 'success' ? (
-            <><i className="ri-checkbox-circle-line text-emerald-500" /> Diálogo abierto</>
+            <><i className="ri-checkbox-circle-line text-emerald-500" /> Página de prueba enviada</>
           ) : testStatus === 'error' ? (
-            <><i className="ri-error-warning-line text-red-500" /> Error — revisa el bloqueador de popups</>
+            <><i className="ri-error-warning-line text-red-500" /> Error — revisa la impresora</>
           ) : (
             <><i className="ri-printer-line" /> Imprimir página de prueba</>
           )}

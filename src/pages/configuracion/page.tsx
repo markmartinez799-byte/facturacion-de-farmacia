@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { useAuthStore } from '@/store/authStore';
-import { Building2, Users, Store, FileText, Plus, Edit2, X, KeyRound, Eye, EyeOff, CheckCircle, AlertCircle, Printer, Rocket, Trash2 } from 'lucide-react';
+import { Building2, Users, Store, FileText, Plus, Edit2, X, KeyRound, Eye, EyeOff, CheckCircle, AlertCircle, Printer, Rocket, Trash2, Database } from 'lucide-react';
 import type { User, Branch } from '@/types';
 import PrinterConfig from './components/PrinterConfig';
 import ModoProduccion from './components/ModoProduccion';
 import FacturaEditor from './components/FacturaEditor';
+import BackupModal from './components/BackupModal';
 
 export default function ConfiguracionPage() {
   const { settings, updateSettings, ncfSequences, updateNCFSequence } = useAppStore();
-  const { users, branches, addUser, updateUser, deleteUser, addBranch, updateBranch, deleteBranch, currentUser, changeAdminPassword, companySettings, loadCompanySettings, saveCompanySettingsDB } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'empresa' | 'cajeros' | 'sucursales' | 'ncf' | 'seguridad' | 'impresora' | 'produccion'>('empresa');
+  const { users, branches, addUser, updateUser, deleteUser, addBranch, updateBranch, deleteBranch, currentUser, changeAdminPassword, companySettings, loadCompanySettings, saveCompanySettingsDB, hasRole, availableRoles } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<'empresa' | 'cajeros' | 'sucursales' | 'ncf' | 'seguridad' | 'impresora' | 'produccion' | 'backup'>('empresa');
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [companyForm, setCompanyForm] = useState({
@@ -49,9 +50,10 @@ export default function ConfiguracionPage() {
   }, [companySettings, settings]);
   const [showUserModal, setShowUserModal] = useState(false);
   const [showBranchModal, setShowBranchModal] = useState(false);
+  const [showBackupModal, setShowBackupModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
-  const [userForm, setUserForm] = useState({ name: '', accessCode: '', branchId: '', isActive: true });
+  const [userForm, setUserForm] = useState({ name: '', accessCode: '', branchId: '', role: 'cashier' as User['role'], isActive: true });
   const [branchForm, setBranchForm] = useState({ name: '', address: '', phone: '', rnc: '', isActive: true });
   const [confirmDelete, setConfirmDelete] = useState<{ type: 'cajero' | 'sucursal'; id: string; name: string } | null>(null);
   // Password change state
@@ -100,10 +102,10 @@ export default function ConfiguracionPage() {
     if (editingUser) {
       updateUser(editingUser.id, userForm);
     } else {
-      addUser({ ...userForm, role: 'cashier', isActive: true });
+      addUser({ ...userForm, isActive: true });
     }
     setShowUserModal(false);
-    setUserForm({ name: '', accessCode: '', branchId: '', isActive: true });
+    setUserForm({ name: '', accessCode: '', branchId: '', role: 'cashier', isActive: true });
   };
 
   const handleSaveBranch = () => {
@@ -128,13 +130,13 @@ export default function ConfiguracionPage() {
 
   const tabs = [
     { id: 'empresa', label: 'Empresa', icon: Building2 },
-    { id: 'cajeros', label: 'Cajeros', icon: Users },
-    { id: 'sucursales', label: 'Sucursales', icon: Store },
-    { id: 'ncf', label: 'NCF', icon: FileText },
+    { id: 'cajeros', label: 'Usuarios', icon: Users },
+    ...(hasRole('admin') ? [{ id: 'sucursales', label: 'Sucursales', icon: Store }] : []),
+    ...(hasRole('admin') ? [{ id: 'ncf', label: 'NCF', icon: FileText }] : []),
     { id: 'impresora', label: 'Impresora', icon: Printer },
-    { id: 'factura', label: 'Factura', icon: FileText },
-    ...(currentUser?.role === 'admin' ? [{ id: 'seguridad', label: 'Seguridad', icon: KeyRound }] : []),
-    ...(currentUser?.role === 'admin' ? [{ id: 'produccion', label: 'Modo Producción', icon: Rocket }] : []),
+    ...(hasRole('admin') || hasRole('manager') ? [{ id: 'factura', label: 'Factura', icon: FileText }] : []),
+    ...(hasRole('admin') ? [{ id: 'backup', label: 'Backup', icon: Database }] : []),
+    ...(hasRole('admin') ? [{ id: 'seguridad', label: 'Seguridad', icon: KeyRound }] : []),
   ];
 
   return (
@@ -160,6 +162,45 @@ export default function ConfiguracionPage() {
           </button>
         ))}
       </div>
+
+      {activeTab === 'backup' && hasRole('admin') && (
+        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-800 dark:text-white">Copia de Seguridad</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Exporta todos tus datos a archivos Excel</p>
+            </div>
+            <button
+              onClick={() => setShowBackupModal(true)}
+              className="px-5 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm cursor-pointer whitespace-nowrap flex items-center gap-2"
+            >
+              <i className="ri-download-cloud-line"></i>
+              Crear Backup
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[
+              { label: 'Productos', icon: 'ri-medicine-bottle-line', desc: 'Inventario completo con stock y precios', color: 'emerald' },
+              { label: 'Ventas', icon: 'ri-bill-line', desc: 'Todas las facturas con detalle de items', color: 'sky' },
+              { label: 'Clientes', icon: 'ri-user-line', desc: 'Base de datos de clientes', color: 'amber' },
+              { label: 'Compras', icon: 'ri-shopping-cart-line', desc: 'Historial de compras a proveedores', color: 'violet' },
+            ].map((item) => (
+              <div key={item.label} className={`p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${item.color === 'emerald' ? 'bg-emerald-100 dark:bg-emerald-900/30' : item.color === 'sky' ? 'bg-sky-100 dark:bg-sky-900/30' : item.color === 'amber' ? 'bg-amber-100 dark:bg-amber-900/30' : 'bg-violet-100 dark:bg-violet-900/30'}`}>
+                    <i className={`${item.icon} text-lg ${item.color === 'emerald' ? 'text-emerald-600' : item.color === 'sky' ? 'text-sky-600' : item.color === 'amber' ? 'text-amber-600' : 'text-violet-600'}`}></i>
+                  </div>
+                  <div>
+                    <p className="font-semibold text-slate-800 dark:text-white text-sm">{item.label}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{item.desc}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {activeTab === 'empresa' && (
         <form onSubmit={handleSaveSettings}>
@@ -242,12 +283,12 @@ export default function ConfiguracionPage() {
       {activeTab === 'cajeros' && (
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700">
           <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-slate-800 dark:text-white">Gestión de Cajeros</h2>
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-white">Gestión de Usuarios</h2>
             <button
-              onClick={() => { setEditingUser(null); setUserForm({ name: '', accessCode: '', branchId: '', isActive: true }); setShowUserModal(true); }}
+              onClick={() => { setEditingUser(null); setUserForm({ name: '', accessCode: '', branchId: '', role: 'cashier', isActive: true }); setShowUserModal(true); }}
               className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700"
             >
-              <Plus className="w-4 h-4" /> Nuevo Cajero
+              <Plus className="w-4 h-4" /> Nuevo Usuario
             </button>
           </div>
           <div className="overflow-x-auto">
@@ -255,6 +296,7 @@ export default function ConfiguracionPage() {
               <thead className="bg-slate-50 dark:bg-slate-900">
                 <tr>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Nombre</th>
+                  <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Rol</th>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Código</th>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Sucursal</th>
                   <th className="text-center p-3 text-slate-600 dark:text-slate-400 font-medium">Estado</th>
@@ -262,12 +304,22 @@ export default function ConfiguracionPage() {
                 </tr>
               </thead>
               <tbody>
-                {users.filter((u) => u.role === 'cashier').map((user) => (
+                {users.map((user) => (
                   <tr key={user.id} className="border-t border-slate-100 dark:border-slate-700">
-                    <td className="p-3 text-slate-800 dark:text-slate-200">{user.name}</td>
-                    <td className="p-3 font-mono text-slate-600 dark:text-slate-400">{user.accessCode}</td>
+                    <td className="p-3 text-slate-800 dark:text-slate-200 font-medium">{user.name}</td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        user.role === 'admin' ? 'bg-purple-100 text-purple-700' :
+                        user.role === 'manager' ? 'bg-blue-100 text-blue-700' :
+                        user.role === 'supervisor' ? 'bg-amber-100 text-amber-700' :
+                        'bg-slate-100 text-slate-700'
+                      }`}>
+                        {availableRoles.find((r) => r.value === user.role)?.label || user.role}
+                      </span>
+                    </td>
+                    <td className="p-3 font-mono text-slate-600 dark:text-slate-400">{user.accessCode || '—'}</td>
                     <td className="p-3 text-slate-800 dark:text-slate-200">
-                      {branches.find((b) => b.id === user.branchId)?.name}
+                      {branches.find((b) => b.id === user.branchId)?.name || '—'}
                     </td>
                     <td className="p-3 text-center">
                       <span className={`px-2 py-1 rounded-full text-xs ${
@@ -279,7 +331,7 @@ export default function ConfiguracionPage() {
                     <td className="p-3 text-center">
                       <div className="flex items-center justify-center gap-1">
                         <button
-                          onClick={() => { setEditingUser(user); setUserForm({ name: user.name, accessCode: user.accessCode || '', branchId: user.branchId || '', isActive: user.isActive }); setShowUserModal(true); }}
+                          onClick={() => { setEditingUser(user); setUserForm({ name: user.name, accessCode: user.accessCode || '', branchId: user.branchId || '', role: user.role, isActive: user.isActive }); setShowUserModal(true); }}
                           className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
                           title="Editar"
                         >
@@ -404,11 +456,8 @@ export default function ConfiguracionPage() {
         <FacturaEditor />
       )}
 
-      {activeTab === 'produccion' && currentUser?.role === 'admin' && (
-        <ModoProduccion />
-      )}
 
-      {activeTab === 'seguridad' && currentUser?.role === 'admin' && (
+      {activeTab === 'seguridad' && hasRole('admin') && (
         <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700 max-w-md">
           <h2 className="text-lg font-semibold text-slate-800 dark:text-white mb-1 flex items-center gap-2">
             <KeyRound className="w-5 h-5 text-emerald-600" />
@@ -451,13 +500,21 @@ export default function ConfiguracionPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-md">
             <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
-              <h3 className="font-semibold text-slate-800 dark:text-white">{editingUser ? 'Editar Cajero' : 'Nuevo Cajero'}</h3>
+              <h3 className="font-semibold text-slate-800 dark:text-white">{editingUser ? 'Editar Usuario' : 'Nuevo Usuario'}</h3>
               <button onClick={() => setShowUserModal(false)}><X className="w-5 h-5" /></button>
             </div>
             <div className="p-4 space-y-4">
               <div>
                 <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1 block">Nombre Completo</label>
                 <input type="text" value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })} className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white" />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1 block">Rol del Usuario</label>
+                <select value={userForm.role} onChange={(e) => setUserForm({ ...userForm, role: e.target.value as User['role'] })} className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white">
+                  {availableRoles.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1 block">Código de Acceso (4 dígitos)</label>
@@ -489,7 +546,7 @@ export default function ConfiguracionPage() {
                 </div>
                 <div>
                   <h3 className="font-semibold text-slate-800 dark:text-white">
-                    Eliminar {confirmDelete.type === 'cajero' ? 'Cajero' : 'Sucursal'}
+                    Eliminar {confirmDelete.type === 'cajero' ? 'Usuario' : 'Sucursal'}
                   </h3>
                   <p className="text-sm text-slate-500 dark:text-slate-400">Esta acción no se puede deshacer</p>
                 </div>
@@ -554,6 +611,8 @@ export default function ConfiguracionPage() {
           </div>
         </div>
       )}
+
+      {showBackupModal && <BackupModal onClose={() => setShowBackupModal(false)} />}
     </div>
   );
 }

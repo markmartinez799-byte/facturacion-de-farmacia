@@ -18,7 +18,7 @@ export function Layout() {
       <div className="flex-1 flex flex-col bg-slate-100 dark:bg-slate-950 transition-colors duration-300">
         <TopBar />
         <div className="flex flex-1 overflow-hidden">
-          {currentUser?.role === 'admin' && <Sidebar />}
+          {currentUser && currentUser.role !== 'cashier' && <Sidebar />}
           <main className="flex-1 overflow-auto p-4 lg:p-6">
             <Outlet />
           </main>

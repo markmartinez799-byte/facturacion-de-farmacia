@@ -3,6 +3,7 @@ import type { CartItem, NCFType, PaymentMethod } from '@/types';
 
 export interface BillingPayload {
   usuarioId: string;
+  usuarioName?: string;
   sucursalId: string;
   clienteId?: string;
   tipoNcf: NCFType;
@@ -20,6 +21,48 @@ export interface BillingResult {
   ncf?: string;
   numeroFactura?: number;
   error?: string;
+}
+
+const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Garantiza que el usuario existe en usuarios_farmacia antes de insertar una factura.
+ * Si no existe, lo crea automáticamente con los datos disponibles.
+ */
+async function ensureUsuarioInSupabase(usuarioId: string, usuarioName?: string): Promise<boolean> {
+  if (!uuidRegex.test(usuarioId)) return false;
+
+  try {
+    // 1. Verificar si ya existe
+    const { data: existing } = await supabase
+      .from('usuarios_farmacia')
+      .select('id')
+      .eq('id', usuarioId)
+      .maybeSingle();
+
+    if (existing) return true;
+
+    // 2. Si no existe, crearlo automáticamente
+    const { error: insertError } = await supabase
+      .from('usuarios_farmacia')
+      .insert({
+        id: usuarioId,
+        nombre: usuarioName || 'Cajero del Sistema',
+        rol: 'cashier',
+        activo: true,
+      });
+
+    if (insertError) {
+      console.warn('[billing] No se pudo auto-crear usuario en usuarios_farmacia:', insertError.message);
+      return false;
+    }
+
+    console.log('[billing] Usuario auto-creado en usuarios_farmacia:', usuarioId);
+    return true;
+  } catch (err) {
+    console.warn('[billing] Error verificando/creando usuario:', err);
+    return false;
+  }
 }
 
 /**
@@ -80,10 +123,7 @@ async function getLoteFefo(
  */
 export async function saveBillingToSupabase(payload: BillingPayload): Promise<BillingResult> {
   try {
-    // 1. Insertar cabecera de factura
-    // El trigger BEFORE INSERT asigna el NCF real desde ncf_control_farmacia
     // Validate UUIDs — mock IDs like 'branch-1' or 'admin-1' are not valid UUIDs
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const validSucursalId = payload.sucursalId && uuidRegex.test(payload.sucursalId) ? payload.sucursalId : null;
     const validUsuarioId = payload.usuarioId && uuidRegex.test(payload.usuarioId) ? payload.usuarioId : null;
     const validClienteId = payload.clienteId && uuidRegex.test(payload.clienteId) ? payload.clienteId : null;
@@ -92,10 +132,20 @@ export async function saveBillingToSupabase(payload: BillingPayload): Promise<Bi
       return { success: false, error: 'ID de usuario inválido. Por favor cierra sesión y vuelve a entrar.' };
     }
 
+    // CRÍTICO: garantizar que el usuario exista en usuarios_farmacia antes de insertar la factura.
+    // Esto evita el error de foreign key constraint cuando un cajero fue creado localmente
+    // pero nunca se sincronizó con la tabla de usuarios de Supabase.
+    const usuarioExists = await ensureUsuarioInSupabase(validUsuarioId, payload.usuarioName);
+    if (!usuarioExists) {
+      console.warn('[billing] El usuario no existe en usuarios_farmacia y no pudo ser auto-creado.');
+      // Intento de fallback: usar null si la columna lo permite.
+      // Si la columna es NOT NULL, esto fallará con error de BD, pero al menos lo intentamos.
+    }
+
     const { data: factura, error: facturaError } = await supabase
       .from('facturas_farmacia')
       .insert({
-        usuario_id: validUsuarioId,
+        usuario_id: usuarioExists ? validUsuarioId : null,
         sucursal_id: validSucursalId,
         cliente_id: validClienteId,
         tipo_ncf: payload.tipoNcf,
@@ -112,6 +162,13 @@ export async function saveBillingToSupabase(payload: BillingPayload): Promise<Bi
 
     if (facturaError) {
       console.error('[billing] Error insertando factura:', facturaError);
+      // Si el error es de FK y el usuario no pudo ser creado, dar mensaje más claro
+      if (facturaError.message?.includes('foreign key constraint') || facturaError.code === '23503') {
+        return {
+          success: false,
+          error: 'El cajero no está registrado en el sistema. Por favor pide al administrador que sincronice los usuarios en Configuración > Usuarios.',
+        };
+      }
       return { success: false, error: facturaError.message };
     }
 

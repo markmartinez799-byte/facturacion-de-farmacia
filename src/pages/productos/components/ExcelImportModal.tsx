@@ -726,7 +726,7 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
                 )}
               </div>
 
-              {/* Preview table */}
+              {/* Preview table - show ALL rows without 200 limit */}
               <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-xl">
                 <table className="w-full text-xs">
                   <thead className="bg-slate-50 dark:bg-slate-900 sticky top-0">
@@ -737,7 +737,7 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
                     </tr>
                   </thead>
                   <tbody>
-                    {displayRows.slice(0, 200).map((row) => (
+                    {displayRows.map((row) => (
                       <tr key={row._rowIndex} className={`border-t border-slate-100 dark:border-slate-700 ${row._warnings.length > 0 ? 'bg-amber-50/40 dark:bg-amber-900/5' : ''}`}>
                         <td className="p-2.5 text-slate-400">{row._rowIndex}</td>
                         <td className="p-2.5">
@@ -765,11 +765,6 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
                     ))}
                   </tbody>
                 </table>
-                {displayRows.length > 200 && (
-                  <div className="p-3 text-center text-xs text-slate-400 border-t border-slate-100 dark:border-slate-700">
-                    Mostrando 200 de {displayRows.length} filas. Se procesarán todas al importar.
-                  </div>
-                )}
               </div>
             </div>
           )}

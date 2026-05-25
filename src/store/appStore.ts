@@ -9,6 +9,14 @@ const DEFAULT_SEQ: NCFSequence[] = [
   { type: 'B15', label: 'Exportaciones', prefix: 'B15', lastNumber: 0, limit: 9999999, isActive: true },
 ];
 
+export interface BackupSettings {
+  enabled: boolean;
+  frequency: 'daily' | 'weekly';
+  lastBackupDate: string | null;
+}
+
+export type PrintMode = 'auto' | 'ask' | 'never';
+
 export interface PrinterSettings {
   printerName: string;
   printerType: '58mm' | '80mm' | 'A4';
@@ -18,6 +26,7 @@ export interface PrinterSettings {
   printFooter: boolean;
   footerText: string;
   fontSize: 'small' | 'medium' | 'large';
+  printMode: PrintMode;
 }
 
 const DEFAULT_PRINTER: PrinterSettings = {
@@ -29,6 +38,13 @@ const DEFAULT_PRINTER: PrinterSettings = {
   printFooter: true,
   footerText: 'Gracias por su compra. ¡Vuelva pronto!',
   fontSize: 'medium',
+  printMode: 'auto',
+};
+
+const DEFAULT_BACKUP: BackupSettings = {
+  enabled: false,
+  frequency: 'daily',
+  lastBackupDate: null,
 };
 
 interface AppState {
@@ -37,12 +53,14 @@ interface AppState {
   settings: CompanySettings;
   ncfSequences: NCFSequence[];
   printerSettings: PrinterSettings;
+  backupSettings: BackupSettings;
   toggleDarkMode: () => void;
   toggleSound: () => void;
   updateSettings: (updates: Partial<CompanySettings>) => void;
   updateNCFSequence: (type: NCFType, updates: Partial<NCFSequence>) => void;
   nextNCF: (type: NCFType) => string;
   updatePrinterSettings: (updates: Partial<PrinterSettings>) => void;
+  updateBackupSettings: (updates: Partial<BackupSettings>) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -51,6 +69,7 @@ export const useAppStore = create<AppState>()(
       isDarkMode: false,
       isSoundEnabled: true,
       printerSettings: DEFAULT_PRINTER,
+      backupSettings: DEFAULT_BACKUP,
       settings: {
         name: 'Farmacia GENOSAN',
         rnc: '1-01-00000-0',
@@ -69,6 +88,8 @@ export const useAppStore = create<AppState>()(
         set((s) => ({ ncfSequences: s.ncfSequences.map((sq) => sq.type === type ? { ...sq, ...updates } : sq) })),
       updatePrinterSettings: (updates) =>
         set((s) => ({ printerSettings: { ...s.printerSettings, ...updates } })),
+      updateBackupSettings: (updates) =>
+        set((s) => ({ backupSettings: { ...s.backupSettings, ...updates } })),
       nextNCF: (type) => {
         const seq = get().ncfSequences.find((s) => s.type === type);
         if (!seq) return 'B0200000001';

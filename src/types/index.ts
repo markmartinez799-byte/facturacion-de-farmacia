@@ -1,7 +1,8 @@
 export interface User {
   id: string;
   name: string;
-  role: 'admin' | 'cashier';
+  /** Rol del usuario en el sistema. Enum estricto con 4 niveles de permisos. */
+  role: 'admin' | 'cashier' | 'supervisor' | 'manager';
   username?: string;
   password?: string;
   accessCode?: string;
@@ -59,6 +60,10 @@ export interface SupplierPurchase {
   estadoPago: PurchasePaymentStatus;
   notas?: string;
   abonos?: AbonoCompra[];
+  /** Si ya fue editada una vez, no se permite editar de nuevo */
+  wasEditedOnce?: boolean;
+  /** Fecha de facturación del proveedor (puede ser distinta a la fecha de registro) */
+  fechaFacturacion?: string;
   createdAt: string;
 }
 

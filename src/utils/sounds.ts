@@ -51,6 +51,29 @@ export const playCashRegister = (): void => {
   }
 };
 
+export const playErrorSound = (): void => {
+  try {
+    const ctx = getAudioContext();
+    const playTone = (freq: number, start: number, dur: number, vol = 0.5) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+      gain.gain.setValueAtTime(vol, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur);
+    };
+    playTone(220, 0, 0.15, 0.4);
+    playTone(180, 0.18, 0.15, 0.4);
+    playTone(140, 0.36, 0.3, 0.35);
+  } catch {
+    /* silent fail */
+  }
+};
+
 export const playClick = (): void => {
   try {
     const ctx = getAudioContext();

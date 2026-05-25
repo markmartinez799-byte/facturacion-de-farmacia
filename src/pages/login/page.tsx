@@ -54,13 +54,14 @@ export default function LoginPage() {
   const openingInputRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
-  const activeCashiers = users.filter((u) => u.role === 'cashier' && u.isActive);
+  const activeCashiers = users.filter((u) => (u.role === 'cashier' || u.role === 'supervisor') && u.isActive);
   const activeBranches = branches.filter((b) => b.isActive);
   const dailyPhrase = getDailyPhrase();
 
   useEffect(() => {
     if (isAuthenticated && currentUser) {
-      navigate(currentUser.role === 'admin' ? '/panel' : '/pago');
+      const adminPath = currentUser.role === 'admin' || currentUser.role === 'manager' ? '/panel' : '/pago';
+      navigate(adminPath);
     }
   }, [isAuthenticated, currentUser, navigate]);
 
@@ -83,24 +84,23 @@ export default function LoginPage() {
     reader.readAsDataURL(file);
   };
 
-  const handleCashierLogin = useCallback(() => {
+  const handleCashierLogin = useCallback(async () => {
     if (!selectedCashier || !selectedBranch || code.length < 4) {
       setError('Selecciona cajero, sucursal e ingresa el código');
       return;
     }
     setIsLoading(true);
-    setTimeout(() => {
-      const success = loginCashier(selectedCashier.id, code, selectedBranch);
-      if (success) {
-        if (isSoundEnabled) playBeep();
-        setMode('opening-cash');
-      } else {
-        setError('Código incorrecto');
-        setCode('');
-        codeInputRef.current?.focus();
-      }
-      setIsLoading(false);
-    }, 400);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const success = await loginCashier(selectedCashier.id, code, selectedBranch);
+    if (success) {
+      if (isSoundEnabled) playBeep();
+      setMode('opening-cash');
+    } else {
+      setError('Código incorrecto');
+      setCode('');
+      codeInputRef.current?.focus();
+    }
+    setIsLoading(false);
   }, [selectedCashier, selectedBranch, code, loginCashier, isSoundEnabled]);
 
   const handleAdminLogin = useCallback(async () => {
@@ -142,8 +142,8 @@ export default function LoginPage() {
 
       {/* Brand top-left */}
       <div className="absolute top-6 left-8 flex items-center gap-3 z-10">
-        <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center">
-          <img src="https://public.readdy.ai/ai/img_res/d0d3026a-1720-4eff-93a8-50eeb3e4d3db.png" alt="GENOSAN" className="w-8 h-8 object-contain" />
+        <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center overflow-hidden">
+          <img src="https://storage.readdy-site.link/project_files/61af992a-e06f-4abd-88c8-ec17ee19dfca/28008b87-7746-4f5b-b115-a239cbb570ec_Farmacia-GN.png?v=6b59633c552f3dcaab6c84d0e5aaf330" alt="GENOSAN" className="w-full h-full object-contain" />
         </div>
         <div>
           <p className="text-white font-bold text-lg leading-none font-sora">GENOSAN</p>
@@ -151,18 +151,18 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* Daily phrase top-right */}
-      <div className="absolute top-6 right-8 z-10 max-w-xs text-right hidden lg:block">
-        <p className="text-emerald-300 text-xs font-medium uppercase tracking-widest mb-1">Frase del día</p>
-        <p className="text-white/80 text-sm italic leading-snug">&ldquo;{dailyPhrase}&rdquo;</p>
-      </div>
 
-      {/* Daily phrase center-bottom on mobile */}
-      <div className="absolute bottom-6 left-0 right-0 z-10 px-6 text-center lg:hidden">
-        <p className="text-white/60 text-xs italic">&ldquo;{dailyPhrase}&rdquo;</p>
-      </div>
 
       <div className="relative z-10 w-full max-w-sm">
+
+        {/* Daily phrase - centered above welcome card, large */}
+        <div className="text-center mb-6 px-4">
+          <p className="text-emerald-300 text-xs font-medium uppercase tracking-[0.2em] mb-2">Frase del día</p>
+          <p className="text-white text-lg md:text-xl font-medium italic leading-relaxed drop-shadow-lg">
+            &ldquo;{dailyPhrase}&rdquo;
+          </p>
+        </div>
+
         <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl overflow-hidden">
 
           {/* ROLE SELECT */}

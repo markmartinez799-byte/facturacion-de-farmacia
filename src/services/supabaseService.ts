@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import type { Product, Client, Supplier, SupplierPurchase, ReturnToSupplier, Branch, AbonoCompra } from '@/types';
+import type { Product, Client, Supplier, SupplierPurchase, ReturnToSupplier, Branch, AbonoCompra, User } from '@/types';
 import { generateId, now } from '@/utils/formatters';
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
@@ -117,17 +117,65 @@ function rowToBranch(row: Record<string, unknown>): Branch {
 // ─── PRODUCTS ───────────────────────────────────────────────────────────────
 
 export async function fetchProducts(): Promise<Product[]> {
-  const [{ data: prods, error: prodsError }, { data: stocks, error: stocksError }] = await Promise.all([
-    supabase.from('productos_farmacia').select('*').order('nombre'),
-    supabase.from('stock_farmacia').select('producto_id, sucursal_id, cantidad'),
-  ]);
+  // Paginate to fetch ALL products (Supabase default limit is 1000)
+  let allProds: Record<string, unknown>[] = [];
+  let from = 0;
+  const pageSize = 1000;
+  let hasMore = true;
 
-  if (prodsError) console.error('[fetchProducts] productos_farmacia error:', prodsError.message);
-  if (stocksError) console.error('[fetchProducts] stock_farmacia error:', stocksError.message);
+  while (hasMore) {
+    const { data: prodsPage, error: prodsError } = await supabase
+      .from('productos_farmacia')
+      .select('*')
+      .order('nombre')
+      .range(from, from + pageSize - 1);
+
+    if (prodsError) {
+      console.error('[fetchProducts] productos_farmacia error:', prodsError.message);
+      break;
+    }
+
+    if (prodsPage && prodsPage.length > 0) {
+      allProds = allProds.concat(prodsPage);
+    }
+
+    if (!prodsPage || prodsPage.length < pageSize) {
+      hasMore = false;
+    } else {
+      from += pageSize;
+    }
+  }
+
+  // Paginate stock too
+  let allStocks: Record<string, unknown>[] = [];
+  let stockFrom = 0;
+  let hasMoreStock = true;
+
+  while (hasMoreStock) {
+    const { data: stocksPage, error: stocksError } = await supabase
+      .from('stock_farmacia')
+      .select('producto_id, sucursal_id, cantidad')
+      .range(stockFrom, stockFrom + pageSize - 1);
+
+    if (stocksError) {
+      console.error('[fetchProducts] stock_farmacia error:', stocksError.message);
+      break;
+    }
+
+    if (stocksPage && stocksPage.length > 0) {
+      allStocks = allStocks.concat(stocksPage);
+    }
+
+    if (!stocksPage || stocksPage.length < pageSize) {
+      hasMoreStock = false;
+    } else {
+      stockFrom += pageSize;
+    }
+  }
 
   // Build stockMap: { productId: { branchId: quantity } }
   const stockMap: Record<string, Record<string, number>> = {};
-  (stocks || []).forEach((s: Record<string, unknown>) => {
+  (allStocks || []).forEach((s: Record<string, unknown>) => {
     const pid = s.producto_id as string;
     const bid = s.sucursal_id as string;
     if (!pid || !bid) return;
@@ -135,7 +183,7 @@ export async function fetchProducts(): Promise<Product[]> {
     stockMap[pid][bid] = Number(s.cantidad) || 0;
   });
 
-  return (prods || []).map((r: Record<string, unknown>) => rowToProduct(r, stockMap));
+  return allProds.map((r: Record<string, unknown>) => rowToProduct(r, stockMap));
 }
 
 export async function upsertProduct(product: Product): Promise<void> {
@@ -228,6 +276,8 @@ export async function fetchSupplierPurchases(): Promise<SupplierPurchase[]> {
     fechaLimitePago: (p.fecha_limite_pago as string) || undefined,
     estadoPago: ((p.estado_pago as string) || 'pagado') as 'pagado' | 'pendiente' | 'vencido',
     notas: (p.notas as string) || undefined,
+    wasEditedOnce: Boolean(p.was_edited_once),
+    fechaFacturacion: (p.fecha_facturacion as string) || undefined,
     createdAt: (p.created_at as string) || now(),
     items: ((p.detalle_compras_farmacia as Record<string, unknown>[]) || []).map((d) => ({
       productId: d.producto_id as string,
@@ -259,10 +309,12 @@ export async function insertSupplierPurchase(purchase: SupplierPurchase): Promis
     numero_factura: purchase.invoiceNumber || null,
     total: purchase.total,
     fecha_compra: purchase.purchaseDate,
+    fecha_facturacion: purchase.fechaFacturacion || null,
     tipo_pago: purchase.tipoPago,
     fecha_limite_pago: purchase.fechaLimitePago || null,
     estado_pago: purchase.estadoPago,
     notas: purchase.notas || null,
+    was_edited_once: false,
   });
   if (error) return;
 
@@ -279,6 +331,40 @@ export async function insertSupplierPurchase(purchase: SupplierPurchase): Promis
       lote: extItem.lote ?? null,
       fecha_vencimiento: item.expiryDate,
     });
+  }
+}
+
+export async function updatePurchaseRemote(id: string, updates: Partial<SupplierPurchase>): Promise<void> {
+  const dbUpdates: Record<string, unknown> = {};
+  if (updates.invoiceNumber !== undefined) dbUpdates.numero_factura = updates.invoiceNumber || null;
+  if (updates.purchaseDate !== undefined) dbUpdates.fecha_compra = updates.purchaseDate;
+  if (updates.fechaFacturacion !== undefined) dbUpdates.fecha_facturacion = updates.fechaFacturacion || null;
+  if (updates.tipoPago !== undefined) dbUpdates.tipo_pago = updates.tipoPago;
+  if (updates.fechaLimitePago !== undefined) dbUpdates.fecha_limite_pago = updates.fechaLimitePago || null;
+  if (updates.estadoPago !== undefined) dbUpdates.estado_pago = updates.estadoPago;
+  if (updates.notas !== undefined) dbUpdates.notas = updates.notas || null;
+  if (updates.wasEditedOnce !== undefined) dbUpdates.was_edited_once = updates.wasEditedOnce;
+  if (updates.total !== undefined) dbUpdates.total = updates.total;
+  if (updates.items !== undefined) {
+    // Re-insert items if items changed
+    await supabase.from('detalle_compras_farmacia').delete().eq('compra_id', id);
+    for (const item of updates.items) {
+      const extItem = item as typeof item & { salePrice?: number; wholesalePrice?: number; lote?: string };
+      await supabase.from('detalle_compras_farmacia').insert({
+        compra_id: id,
+        producto_id: item.productId,
+        producto_nombre: item.productName,
+        cantidad: item.quantity,
+        costo_unitario: item.unitCost,
+        precio_venta_sugerido: extItem.salePrice ?? null,
+        precio_mayorista: extItem.wholesalePrice ?? null,
+        lote: extItem.lote ?? null,
+        fecha_vencimiento: item.expiryDate,
+      });
+    }
+  }
+  if (Object.keys(dbUpdates).length > 0) {
+    await supabase.from('compras_proveedores_farmacia').update(dbUpdates).eq('id', id);
   }
 }
 
@@ -444,14 +530,32 @@ export async function insertSaleRemote(sale: import('@/types').Sale): Promise<vo
 }
 
 export async function fetchSalesRemote(): Promise<import('@/types').Sale[]> {
-  const { data } = await supabase
-    .from('facturas_farmacia')
-    .select('*, detalle_factura_farmacia(*)')
-    .eq('estado', 'completada')
-    .order('created_at', { ascending: false })
-    .limit(500);
+  // Paginate to fetch all sales
+  let allSales: Record<string, unknown>[] = [];
+  let from = 0;
+  const pageSize = 1000;
+  let hasMore = true;
 
-  return (data || []).map((f: Record<string, unknown>) => ({
+  while (hasMore) {
+    const { data } = await supabase
+      .from('facturas_farmacia')
+      .select('*, detalle_factura_farmacia(*)')
+      .eq('estado', 'completada')
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+
+    if (data && data.length > 0) {
+      allSales = allSales.concat(data);
+    }
+
+    if (!data || data.length < pageSize) {
+      hasMore = false;
+    } else {
+      from += pageSize;
+    }
+  }
+
+  return allSales.map((f: Record<string, unknown>) => ({
     id: f.id as string,
     branchId: (f.sucursal_id as string) || '',
     cashierId: (f.usuario_id as string) || '',
@@ -496,7 +600,7 @@ export async function fetchUsers(): Promise<import('@/types').User[]> {
   return (data || []).map((r: Record<string, unknown>) => ({
     id: r.id as string,
     name: (r.nombre as string) || '',
-    role: ((r.rol as string) === 'admin' ? 'admin' : 'cashier') as 'admin' | 'cashier',
+    role: sanitizeRole(r.rol),
     username: (r.username as string) || undefined,
     password: (r.password_hash as string) || undefined,
     accessCode: (r.codigo_acceso as string) || undefined,
@@ -508,8 +612,8 @@ export async function fetchUsers(): Promise<import('@/types').User[]> {
 }
 
 export async function upsertUser(user: import('@/types').User): Promise<void> {
-  // rol in DB uses 'cajero' for cashiers
-  const dbRol = user.role === 'admin' ? 'admin' : 'cajero';
+  // rol in DB stores text values mapped by dbRole()
+  const dbRol = dbRole(user.role);
   await supabase.from('usuarios_farmacia').upsert({
     id: user.id,
     nombre: user.name,
@@ -601,8 +705,25 @@ export async function fetchSalesForReport(filters: ReportFilters): Promise<impor
   if (filters.sucursalId) query = query.eq('sucursal_id', filters.sucursalId);
   if (filters.cajeroId) query = query.eq('usuario_id', filters.cajeroId);
 
-  const { data } = await query.limit(1000);
-  return (data || []).map((f: Record<string, unknown>) => ({
+  // Paginate to fetch all matching sales
+  let allSales: Record<string, unknown>[] = [];
+  let from = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data } = await query.range(from, from + pageSize - 1);
+    if (data && data.length > 0) {
+      allSales = allSales.concat(data);
+    }
+    if (!data || data.length < pageSize) {
+      hasMore = false;
+    } else {
+      from += pageSize;
+    }
+  }
+
+  return allSales.map((f: Record<string, unknown>) => ({
     id: f.id as string,
     branchId: (f.sucursal_id as string) || '',
     cashierId: (f.usuario_id as string) || '',
@@ -649,8 +770,25 @@ export async function fetchPurchasesForReport(filters: ReportFilters): Promise<S
   if (filters.desde) query = query.gte('created_at', filters.desde + 'T00:00:00');
   if (filters.hasta) query = query.lte('created_at', filters.hasta + 'T23:59:59');
 
-  const { data } = await query.limit(1000);
-  return (data || []).map((p: Record<string, unknown>) => ({
+  // Paginate to fetch all matching purchases
+  let allPurchases: Record<string, unknown>[] = [];
+  let from = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data } = await query.range(from, from + pageSize - 1);
+    if (data && data.length > 0) {
+      allPurchases = allPurchases.concat(data);
+    }
+    if (!data || data.length < pageSize) {
+      hasMore = false;
+    } else {
+      from += pageSize;
+    }
+  }
+
+  return allPurchases.map((p: Record<string, unknown>) => ({
     id: p.id as string,
     supplierId: p.proveedor_id as string,
     supplierName: p.proveedor_nombre as string,
@@ -788,3 +926,29 @@ export async function loadAllData() {
 }
 
 export { generateId, now };
+
+// Mapeo completo entre valores de BD (text) y el enum del frontend
+const DB_ROLE_TO_FRONTEND: Record<string, User['role']> = {
+  admin: 'admin',
+  cashier: 'cashier',
+  cajero: 'cashier',
+  supervisor: 'supervisor',
+  manager: 'manager',
+  gerente: 'manager',
+};
+
+const FRONTEND_ROLE_TO_DB: Record<User['role'], string> = {
+  admin: 'admin',
+  cashier: 'cashier',
+  supervisor: 'supervisor',
+  manager: 'manager',
+};
+
+function sanitizeRole(raw: unknown): User['role'] {
+  if (typeof raw !== 'string') return 'cashier';
+  return DB_ROLE_TO_FRONTEND[raw] ?? 'cashier';
+}
+
+function dbRole(userRole: User['role']): string {
+  return FRONTEND_ROLE_TO_DB[userRole] ?? 'cashier';
+}

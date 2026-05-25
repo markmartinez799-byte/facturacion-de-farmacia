@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Search, Barcode, Hash, Clock, CheckCircle, XCircle, ShieldCheck, ScanLine } from 'lucide-react';
+import { Search, Barcode, Hash, Clock, CheckCircle, XCircle, ShieldCheck, ScanLine, Printer, Loader } from 'lucide-react';
 import BarcodeDisplay from '@/pages/pago/components/BarcodeDisplay';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/utils/formatters';
+import { printReceipt } from '@/services/printService';
+import { useAuthStore } from '@/store/authStore';
+import { useAppStore } from '@/store/appStore';
 import PinModal from './components/PinModal';
 import FacturaDetalleModal from './components/FacturaDetalleModal';
 
@@ -20,6 +23,10 @@ interface FacturaResumen {
 type SearchMode = 'barcode' | 'number';
 
 export default function BuscarFacturaPage() {
+  const { companySettings } = useAuthStore();
+  const { settings: appSettings, printerSettings } = useAppStore();
+  const company = companySettings ?? appSettings;
+
   const [isVerified, setIsVerified] = useState(false);
   const [showPinModal, setShowPinModal] = useState(false);
   const [searchMode, setSearchMode] = useState<SearchMode>('barcode');
@@ -29,6 +36,7 @@ export default function BuscarFacturaPage() {
   const [searched, setSearched] = useState(false);
   const [selectedFacturaId, setSelectedFacturaId] = useState<string | null>(null);
   const [recentFacturas, setRecentFacturas] = useState<FacturaResumen[]>([]);
+  const [quickPrintingId, setQuickPrintingId] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -105,6 +113,99 @@ export default function BuscarFacturaPage() {
     }
   };
 
+  const handleQuickPrint = async (e: React.MouseEvent, f: FacturaResumen) => {
+    e.stopPropagation();
+    setQuickPrintingId(f.id);
+
+    try {
+      // Cargar factura completa con detalles
+      const { data: factura } = await supabase
+        .from('facturas_farmacia')
+        .select('*')
+        .eq('id', f.id)
+        .maybeSingle();
+
+      if (!factura) {
+        setQuickPrintingId(null);
+        return;
+      }
+
+      const { data: detalles } = await supabase
+        .from('detalle_factura_farmacia')
+        .select('nombre_producto, cantidad, precio, itbis_monto, descuento, subtotal, numero_lote')
+        .eq('factura_id', f.id);
+
+      let cajeroNombre = 'N/A';
+      if (factura.usuario_id) {
+        const { data: usr } = await supabase
+          .from('usuarios_farmacia')
+          .select('nombre')
+          .eq('id', factura.usuario_id)
+          .maybeSingle();
+        if (usr) cajeroNombre = usr.nombre;
+      }
+
+      let clienteNombre = '';
+      if (factura.cliente_id) {
+        const { data: cli } = await supabase
+          .from('clientes_farmacia')
+          .select('nombre')
+          .eq('id', factura.cliente_id)
+          .maybeSingle();
+        if (cli) clienteNombre = cli.nombre;
+      }
+
+      let sucursalNombre = '';
+      if (factura.sucursal_id) {
+        const { data: suc } = await supabase
+          .from('branches')
+          .select('name')
+          .eq('id', factura.sucursal_id)
+          .maybeSingle();
+        if (suc) sucursalNombre = suc.name;
+      }
+
+      await printReceipt({
+        companyName: company.name || 'FARMACIA',
+        branchName: sucursalNombre || 'SUCURSAL',
+        rnc: company.rnc,
+        phone: company.phone,
+        address: company.address,
+        website: company.website,
+        logo: company.logo,
+        invoiceHeader: (company as unknown as Record<string, string>).invoiceHeader,
+        invoiceFooter: printerSettings.footerText,
+        invoiceColor: (company as unknown as Record<string, string>).invoiceColor || '#10b981',
+        showLogo: printerSettings.printLogo,
+        ncf: factura.ncf,
+        numeroFactura: factura.numero_factura,
+        facturaId: factura.id,
+        fecha: new Date(factura.created_at).toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' }),
+        cajero: cajeroNombre,
+        clienteNombre,
+        metodoPago: factura.metodo_pago,
+        items: (detalles || []).map((i) => ({
+          name: i.nombre_producto,
+          quantity: i.cantidad,
+          unitPrice: i.precio,
+          lineDiscount: i.descuento,
+        })),
+        subtotal: factura.subtotal,
+        itbis: factura.itbis_total,
+        discountAmount: factura.descuento,
+        globalDiscount: 0,
+        total: factura.total,
+        printerType: printerSettings.printerType as '58mm' | '80mm' | 'A4',
+        fontSize: printerSettings.fontSize as 'small' | 'medium' | 'large',
+        copies: printerSettings.copies,
+      }, true);
+    } catch {
+      /* ignore — printReceipt ya muestra errores internamente */
+    } finally {
+      setQuickPrintingId(null);
+    }
+  };
+
   const estadoColor = (estado: string) =>
     estado === 'activa'
       ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
@@ -120,9 +221,23 @@ export default function BuscarFacturaPage() {
   const FacturaCard = ({ f }: { f: FacturaResumen }) => (
     <button
       onClick={() => setSelectedFacturaId(f.id)}
-      className="w-full text-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 hover:border-emerald-400 dark:hover:border-emerald-600 hover:bg-emerald-50/30 dark:hover:bg-emerald-900/10 cursor-pointer transition-all group"
+      className="w-full text-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 hover:border-emerald-400 dark:hover:border-emerald-600 hover:bg-emerald-50/30 dark:hover:bg-emerald-900/10 cursor-pointer transition-all group relative"
     >
-      <div className="flex items-start justify-between gap-3">
+      {/* Quick print button — top right */}
+      <button
+        onClick={(e) => handleQuickPrint(e, f)}
+        disabled={quickPrintingId === f.id}
+        className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center bg-slate-100 dark:bg-slate-700 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-lg transition-colors cursor-pointer z-10"
+        title="Reimprimir factura"
+      >
+        {quickPrintingId === f.id ? (
+          <Loader className="w-4 h-4 animate-spin text-emerald-500" />
+        ) : (
+          <Printer className="w-4 h-4" />
+        )}
+      </button>
+
+      <div className="flex items-start justify-between gap-3 pr-10">
         <div className="flex items-start gap-3 flex-1 min-w-0">
           {/* Mini barcode preview */}
           {f.numero_factura ? (

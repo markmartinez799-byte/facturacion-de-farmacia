@@ -7,11 +7,15 @@ import { useAuthStore } from "./store/authStore";
 import { usePOSStore } from "./store/posStore";
 import { useEffect } from "react";
 import { fetchBranches } from "./services/supabaseService";
+import { useAutoBackup } from "@/hooks/useAutoBackup";
 
 function AppContent() {
   const { isDarkMode } = useAppStore();
   const { isAuthenticated } = useAuthStore();
   const { loadFromSupabase } = usePOSStore();
+
+  // Activate auto-backup scheduler
+  useAutoBackup();
 
   // Always load fresh branches from Supabase on app start
   // This ensures branch IDs match stock_farmacia records

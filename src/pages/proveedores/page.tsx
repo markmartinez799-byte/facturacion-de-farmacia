@@ -133,33 +133,92 @@ export default function ProveedoresPage() {
 
   const downloadReturnPDF = (ret: ReturnToSupplier) => {
     const sup = suppliers.find((s) => s.id === ret.supplierId);
-    const lines = [
-      '='.repeat(50),
-      '         INFORME DE DEVOLUCIÓN A PROVEEDOR',
-      '='.repeat(50),
-      `Proveedor: ${ret.supplierName}`,
-      `Empresa:   ${ret.supplierCompany}`,
-      `Fecha:     ${formatDateTime(ret.createdAt)}`,
-      `Estado:    ${ret.status.toUpperCase()}`,
-      `Teléfono:  ${sup?.phone || 'N/A'}`,
-      '-'.repeat(50),
-      'PRODUCTOS A DEVOLVER:',
-      '-'.repeat(50),
-      ...ret.items.map((item, i) =>
-        `${i + 1}. ${item.productName}\n   Cantidad: ${item.quantity} | Vence: ${item.expiryDate}\n   Motivo: ${item.reason}`
-      ),
-      '='.repeat(50),
-      'Este documento es para presentar al proveedor.',
-      '='.repeat(50),
-    ];
-    const content = lines.join('\n');
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `devolucion_${ret.supplierName.replace(/\s/g, '_')}_${ret.id.slice(0, 6)}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const statusLabel = ret.status === 'pendiente' ? 'PENDIENTE' : ret.status === 'enviado' ? 'ENVIADO' : 'CONFIRMADO';
+    const statusColor = ret.status === 'pendiente' ? '#d97706' : ret.status === 'enviado' ? '#0284c7' : '#059669';
+
+    const itemsHTML = ret.items.map((item, i) => `
+      <tr style="border-bottom:1px solid #e5e7eb;">
+        <td style="padding:8px 6px;font-size:12px;">${i + 1}. ${item.productName}</td>
+        <td style="padding:8px 6px;text-align:center;font-size:12px;font-family:monospace;">${item.quantity}</td>
+        <td style="padding:8px 6px;text-align:center;font-size:12px;">${item.expiryDate || 'N/A'}</td>
+        <td style="padding:8px 6px;font-size:12px;color:#555;">${item.reason}</td>
+      </tr>`).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Devolución - ${ret.supplierName}</title>
+  <style>
+    @page { size: A4; margin: 15mm 12mm; }
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    body { font-family: Arial, sans-serif; font-size: 13px; color: #111; background: #fff; }
+    @media print { body { margin: 0; } }
+  </style>
+</head>
+<body>
+  <div style="border-bottom:3px solid #10b981;padding-bottom:12px;margin-bottom:16px;">
+    <div style="font-size:20px;font-weight:900;color:#10b981;letter-spacing:0.04em;">INFORME DE DEVOLUCIÓN</div>
+    <div style="font-size:12px;color:#666;margin-top:3px;">Documento para presentar al proveedor</div>
+  </div>
+
+  <div style="display:flex;justify-content:space-between;margin-bottom:16px;gap:16px;">
+    <div style="flex:1;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;">
+      <div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">Proveedor</div>
+      <div style="font-size:15px;font-weight:700;color:#111;">${ret.supplierName}</div>
+      <div style="font-size:12px;color:#555;margin-top:2px;">${ret.supplierCompany}</div>
+      ${sup?.phone ? `<div style="font-size:12px;color:#555;margin-top:2px;">Tel: ${sup.phone}</div>` : ''}
+      ${sup?.email ? `<div style="font-size:12px;color:#555;">Email: ${sup.email}</div>` : ''}
+    </div>
+    <div style="flex:1;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;">
+      <div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;">Información</div>
+      <div style="font-size:12px;color:#555;">Fecha: <strong>${formatDateTime(ret.createdAt)}</strong></div>
+      <div style="font-size:12px;color:#555;margin-top:4px;">ID: <span style="font-family:monospace;">${ret.id.slice(0, 12).toUpperCase()}</span></div>
+      <div style="margin-top:6px;">
+        <span style="background:${statusColor}20;color:${statusColor};border:1px solid ${statusColor}60;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:700;">${statusLabel}</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">Productos a Devolver (${ret.items.length})</div>
+  <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+    <thead>
+      <tr style="background:#f3f4f6;">
+        <th style="padding:8px 6px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Producto</th>
+        <th style="padding:8px 6px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">Cantidad</th>
+        <th style="padding:8px 6px;text-align:center;font-size:11px;color:#6b7280;font-weight:600;">Vencimiento</th>
+        <th style="padding:8px 6px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;">Motivo</th>
+      </tr>
+    </thead>
+    <tbody>${itemsHTML}</tbody>
+  </table>
+
+  <div style="margin-top:24px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:11px;color:#166534;">
+    Este documento es un informe interno de devolución. Preséntelo al proveedor para gestionar el proceso de devolución.
+  </div>
+
+  <div style="margin-top:20px;text-align:center;font-size:10px;color:#9ca3af;border-top:1px solid #e5e7eb;padding-top:10px;">
+    Generado el ${new Date().toLocaleString('es-DO', { dateStyle: 'long', timeStyle: 'short' })}
+  </div>
+</body>
+</html>`;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;border:none;';
+    iframe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(iframe);
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) { document.body.removeChild(iframe); return; }
+    doc.open(); doc.write(html); doc.close();
+    const doPrint = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => { try { document.body.removeChild(iframe); } catch { /* ignore */ } }, 1500);
+      } catch { document.body.removeChild(iframe); }
+    };
+    if (doc.readyState === 'complete') doPrint();
+    else { iframe.onload = doPrint; setTimeout(doPrint, 600); }
   };
 
   const getDaysUntilExpiry = (dateStr: string) => {
@@ -402,7 +461,7 @@ export default function ProveedoresPage() {
                       onClick={() => downloadReturnPDF(ret)}
                       className="px-3 py-1.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium hover:bg-slate-200 dark:hover:bg-slate-600 cursor-pointer flex items-center gap-1 whitespace-nowrap"
                     >
-                      <i className="ri-download-line"></i> Informe
+                      <i className="ri-printer-line"></i> Imprimir
                     </button>
                   </div>
                 </div>

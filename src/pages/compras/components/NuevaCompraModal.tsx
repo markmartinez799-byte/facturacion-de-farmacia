@@ -1,6 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { usePOSStore } from '@/store/posStore';
 import { formatCurrency } from '@/utils/formatters';
+import type { Product } from '@/types';
 
 interface Props {
   onClose: () => void;
@@ -39,21 +40,24 @@ function MarginBadge({ cost, sale }: { cost: number; sale: number }) {
   );
 }
 
+type CreditTerm = '1semana' | '1mes' | 'personalizado';
+
 export default function NuevaCompraModal({ onClose }: Props) {
   const { suppliers, products, addSupplierPurchase } = usePOSStore();
 
   const today = new Date().toISOString().split('T')[0];
   const maxCreditDate = (() => {
     const d = new Date();
-    d.setDate(d.getDate() + 60);
+    d.setDate(d.getDate() + 90);
     return d.toISOString().split('T')[0];
   })();
 
   const [form, setForm] = useState({
     supplierId: '',
     invoiceNumber: '',
-    purchaseDate: today,
+    fechaFacturacion: today,
     tipoPago: 'contado' as 'contado' | 'credito',
+    creditTerm: 'personalizado' as CreditTerm,
     fechaLimitePago: '',
     notas: '',
   });
@@ -63,7 +67,11 @@ export default function NuevaCompraModal({ onClose }: Props) {
   ]);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [searchQueries, setSearchQueries] = useState<string[]>(['']);
+  const [searchOpen, setSearchOpen] = useState<boolean[]>([false]);
+  const searchRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const totals = useMemo(() => {
     const totalInversion = items.reduce((s, i) => s + i.quantity * i.unitCost, 0);
@@ -74,25 +82,103 @@ export default function NuevaCompraModal({ onClose }: Props) {
     return { totalInversion, gananciaEstimada };
   }, [items]);
 
-  const validate = () => {
-    const e: Record<string, string> = {};
-    if (!form.supplierId) e.supplierId = 'Selecciona un proveedor';
-    if (form.tipoPago === 'credito') {
-      if (!form.fechaLimitePago) e.fechaLimitePago = 'La fecha límite es obligatoria para crédito';
-      else if (form.fechaLimitePago > maxCreditDate) e.fechaLimitePago = 'No puede exceder 60 días';
-      else if (form.fechaLimitePago <= form.purchaseDate) e.fechaLimitePago = 'Debe ser posterior a la fecha de compra';
-    }
-    items.forEach((item, idx) => {
-      if (!item.productName.trim()) e[`item_${idx}_name`] = 'Requerido';
-      if (item.unitCost <= 0) e[`item_${idx}_cost`] = 'Ingrese costo';
-      if (!item.expiryDate) e[`item_${idx}_exp`] = 'Requerido';
-    });
-    setErrors(e);
-    return Object.keys(e).length === 0;
+  // Buscador inteligente: filtra por nombre comercial, genérico o código de barra
+  const getFilteredProducts = (query: string) => {
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+    return products
+      .filter((p) => p.isActive)
+      .filter((p) =>
+        p.commercialName.toLowerCase().includes(q) ||
+        p.genericName.toLowerCase().includes(q) ||
+        p.barcode.toLowerCase().includes(q) ||
+        p.lab.toLowerCase().includes(q)
+      )
+      .slice(0, 8);
   };
 
-  const handleSave = async () => {
-    if (!validate()) return;
+  const handleSearchChange = (idx: number, value: string) => {
+    const next = [...searchQueries];
+    next[idx] = value;
+    setSearchQueries(next);
+    const openNext = [...searchOpen];
+    openNext[idx] = value.trim().length > 0;
+    setSearchOpen(openNext);
+  };
+
+  const handleSelectProduct = (idx: number, prod: Product) => {
+    setItems((prev) => {
+      const next = [...prev];
+      next[idx] = {
+        ...next[idx],
+        productId: prod.id,
+        productName: prod.commercialName,
+        unitCost: prod.purchaseCost || 0,
+        salePrice: prod.price || 0,
+        wholesalePrice: prod.wholesalePrice || 0,
+      };
+      return next;
+    });
+    const nextQ = [...searchQueries];
+    nextQ[idx] = prod.commercialName;
+    setSearchQueries(nextQ);
+    const openNext = [...searchOpen];
+    openNext[idx] = false;
+    setSearchOpen(openNext);
+  };
+
+  const handleCreditTermChange = (term: CreditTerm) => {
+    let fechaLimite = '';
+    if (term === '1semana') {
+      const d = new Date();
+      d.setDate(d.getDate() + 7);
+      fechaLimite = d.toISOString().split('T')[0];
+    } else if (term === '1mes') {
+      const d = new Date();
+      d.setMonth(d.getMonth() + 1);
+      fechaLimite = d.toISOString().split('T')[0];
+    }
+    setForm((f) => ({ ...f, creditTerm: term, fechaLimitePago: fechaLimite }));
+  };
+
+  const validate = (allowMissingDates = false) => {
+    const e: Record<string, string> = {};
+    const w: string[] = [];
+
+    if (!form.supplierId) e.supplierId = 'Selecciona un proveedor';
+
+    if (form.tipoPago === 'credito') {
+      if (!form.fechaLimitePago) {
+        e.fechaLimitePago = 'La fecha límite es obligatoria para crédito';
+      } else if (form.fechaLimitePago > maxCreditDate) {
+        e.fechaLimitePago = 'No puede exceder 90 días';
+      } else if (form.fechaLimitePago <= today) {
+        e.fechaLimitePago = 'Debe ser posterior a hoy';
+      }
+    }
+
+    items.forEach((item, idx) => {
+      if (!item.productName.trim()) e[`item_${idx}_name`] = 'Selecciona un producto del buscador';
+      if (item.unitCost <= 0) e[`item_${idx}_cost`] = 'Ingrese costo';
+      if (!allowMissingDates && !item.expiryDate) {
+        w.push(`Producto "${item.productName || `#${idx + 1}`}" sin fecha de vencimiento`);
+      }
+    });
+
+    setErrors(e);
+    setWarnings(w);
+    return { valid: Object.keys(e).length === 0, warnings: w };
+  };
+
+  const handleSave = async (skipWarnings = false) => {
+    const { valid, warnings: w } = validate(skipWarnings);
+    if (!valid) return;
+
+    if (w.length > 0 && !skipWarnings) {
+      // Mostrar warning, no guardar todavía
+      return;
+    }
+
     setSaving(true);
     const sup = suppliers.find((s) => s.id === form.supplierId)!;
     await addSupplierPurchase({
@@ -100,7 +186,8 @@ export default function NuevaCompraModal({ onClose }: Props) {
       supplierName: sup.name,
       supplierCompany: sup.company,
       invoiceNumber: form.invoiceNumber || undefined,
-      purchaseDate: form.purchaseDate,
+      purchaseDate: today,
+      fechaFacturacion: form.fechaFacturacion,
       tipoPago: form.tipoPago,
       fechaLimitePago: form.tipoPago === 'credito' ? form.fechaLimitePago : undefined,
       estadoPago: form.tipoPago === 'contado' ? 'pagado' : 'pendiente',
@@ -124,31 +211,44 @@ export default function NuevaCompraModal({ onClose }: Props) {
   const updateItem = (idx: number, field: keyof CompraItem, value: string | number) => {
     setItems((prev) => {
       const next = [...prev];
-      if (field === 'productId') {
-        const prod = products.find((p) => p.id === value);
-        next[idx] = {
-          ...next[idx],
-          productId: value as string,
-          productName: prod?.commercialName || next[idx].productName,
-          unitCost: prod?.purchaseCost || next[idx].unitCost,
-          salePrice: prod?.price || next[idx].salePrice,
-          wholesalePrice: prod?.wholesalePrice || next[idx].wholesalePrice,
-        };
-      } else {
-        (next[idx] as Record<string, unknown>)[field] = value;
-      }
+      (next[idx] as Record<string, unknown>)[field] = value;
       return next;
     });
   };
 
-  const addItem = () =>
+  const addItem = () => {
     setItems((prev) => [...prev, { productId: '', productName: '', quantity: 1, unitCost: 0, salePrice: 0, wholesalePrice: 0, lote: '', expiryDate: '' }]);
+    setSearchQueries((prev) => [...prev, '']);
+    setSearchOpen((prev) => [...prev, false]);
+  };
 
-  const removeItem = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx));
+  const removeItem = (idx: number) => {
+    setItems((prev) => prev.filter((_, i) => i !== idx));
+    setSearchQueries((prev) => prev.filter((_, i) => i !== idx));
+    setSearchOpen((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  // Click outside to close search dropdowns
+  const handleClickOutside = useCallback((e: MouseEvent) => {
+    searchRefs.current.forEach((ref, idx) => {
+      if (ref && !ref.contains(e.target as Node)) {
+        setSearchOpen((prev) => {
+          const next = [...prev];
+          next[idx] = false;
+          return next;
+        });
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [handleClickOutside]);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-4xl max-h-[94vh] flex flex-col">
+      <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-5xl max-h-[94vh] flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -198,11 +298,11 @@ export default function NuevaCompraModal({ onClose }: Props) {
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Fecha de Compra</label>
+                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Fecha de Facturación <span className="text-red-500">*</span></label>
                 <input
                   type="date"
-                  value={form.purchaseDate}
-                  onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })}
+                  value={form.fechaFacturacion}
+                  onChange={(e) => setForm({ ...form, fechaFacturacion: e.target.value })}
                   className="w-full p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
                 />
               </div>
@@ -218,7 +318,7 @@ export default function NuevaCompraModal({ onClose }: Props) {
               {(['contado', 'credito'] as const).map((tipo) => (
                 <button
                   key={tipo}
-                  onClick={() => setForm({ ...form, tipoPago: tipo, fechaLimitePago: '' })}
+                  onClick={() => setForm({ ...form, tipoPago: tipo, fechaLimitePago: '', creditTerm: 'personalizado' })}
                   className={`flex-1 py-2.5 rounded-lg border-2 text-sm font-medium transition-all cursor-pointer ${
                     form.tipoPago === tipo
                       ? tipo === 'contado'
@@ -233,19 +333,42 @@ export default function NuevaCompraModal({ onClose }: Props) {
               ))}
             </div>
             {form.tipoPago === 'credito' && (
-              <div className="mt-3">
-                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">
-                  Fecha Límite de Pago <span className="text-red-500">*</span> <span className="text-slate-400">(máx. 60 días)</span>
-                </label>
-                <input
-                  type="date"
-                  value={form.fechaLimitePago}
-                  min={form.purchaseDate}
-                  max={maxCreditDate}
-                  onChange={(e) => setForm({ ...form, fechaLimitePago: e.target.value })}
-                  className={`w-full sm:w-64 p-2 rounded-lg border text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-white ${errors.fechaLimitePago ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
-                />
-                {errors.fechaLimitePago && <p className="text-xs text-red-500 mt-0.5">{errors.fechaLimitePago}</p>}
+              <div className="mt-3 space-y-3">
+                {/* Opciones de plazo */}
+                <div className="flex gap-2 flex-wrap">
+                  {([
+                    { key: '1semana' as CreditTerm, label: '1 Semana', icon: 'ri-calendar-event-line' },
+                    { key: '1mes' as CreditTerm, label: '1 Mes', icon: 'ri-calendar-2-line' },
+                    { key: 'personalizado' as CreditTerm, label: 'Personalizado', icon: 'ri-edit-line' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.key}
+                      onClick={() => handleCreditTermChange(opt.key)}
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+                        form.creditTerm === opt.key
+                          ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 text-amber-700 dark:text-amber-400'
+                          : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 hover:border-slate-300'
+                      }`}
+                    >
+                      <i className={opt.icon}></i> {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">
+                    Fecha Límite de Pago <span className="text-red-500">*</span> <span className="text-slate-400">(máx. 90 días)</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={form.fechaLimitePago}
+                    min={today}
+                    max={maxCreditDate}
+                    onChange={(e) => setForm({ ...form, fechaLimitePago: e.target.value, creditTerm: 'personalizado' })}
+                    className={`w-full sm:w-64 p-2 rounded-lg border text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-white ${errors.fechaLimitePago ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
+                  />
+                  {errors.fechaLimitePago && <p className="text-xs text-red-500 mt-0.5">{errors.fechaLimitePago}</p>}
+                </div>
               </div>
             )}
           </div>
@@ -279,34 +402,82 @@ export default function NuevaCompraModal({ onClose }: Props) {
                 const subtotal = item.quantity * item.unitCost;
                 const ganancia = item.salePrice > 0 ? (item.salePrice - item.unitCost) * item.quantity : null;
                 const isLoss = ganancia !== null && ganancia < 0;
+                const filtered = getFilteredProducts(searchQueries[idx] || '');
 
                 return (
                   <div
                     key={idx}
                     className={`p-3 rounded-xl border ${isLoss ? 'border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-900/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`}
                   >
-                    <div className="grid grid-cols-2 lg:grid-cols-12 gap-2 items-center">
-                      {/* Producto selector */}
-                      <div className="col-span-2 lg:col-span-3">
+                    <div className="grid grid-cols-2 lg:grid-cols-12 gap-2 items-start">
+                      {/* Buscador inteligente de producto */}
+                      <div className="col-span-2 lg:col-span-3 relative" ref={(el) => { searchRefs.current[idx] = el; }}>
                         <label className="text-xs text-slate-400 mb-1 block lg:hidden">Producto</label>
-                        <select
-                          value={item.productId}
-                          onChange={(e) => updateItem(idx, 'productId', e.target.value)}
-                          className={`w-full p-1.5 rounded-lg border text-xs bg-white dark:bg-slate-800 text-slate-800 dark:text-white ${errors[`item_${idx}_name`] ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
-                        >
-                          <option value="">Seleccionar...</option>
-                          {products.filter((p) => p.isActive).map((p) => (
-                            <option key={p.id} value={p.id}>{p.commercialName}</option>
-                          ))}
-                        </select>
-                        {!item.productId && (
+                        <div className="relative">
+                          <i className="ri-search-line absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
                           <input
                             type="text"
-                            value={item.productName}
-                            onChange={(e) => updateItem(idx, 'productName', e.target.value)}
-                            placeholder="O escribir nombre manual..."
-                            className="w-full mt-1 p-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs"
+                            value={searchQueries[idx] || ''}
+                            onChange={(e) => handleSearchChange(idx, e.target.value)}
+                            onFocus={() => {
+                              if ((searchQueries[idx] || '').trim().length > 0) {
+                                setSearchOpen((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = true;
+                                  return next;
+                                });
+                              }
+                            }}
+                            placeholder="Busca por nombre, genérico o código..."
+                            className={`w-full pl-8 pr-3 py-2 rounded-lg border text-xs bg-white dark:bg-slate-800 text-slate-800 dark:text-white ${errors[`item_${idx}_name`] ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
                           />
+                          {item.productId && (
+                            <button
+                              onClick={() => {
+                                updateItem(idx, 'productId', '');
+                                updateItem(idx, 'productName', '');
+                                handleSearchChange(idx, '');
+                              }}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 cursor-pointer"
+                            >
+                              <i className="ri-close-line"></i>
+                            </button>
+                          )}
+                        </div>
+                        {errors[`item_${idx}_name`] && <p className="text-xs text-red-500 mt-0.5">{errors[`item_${idx}_name`]}</p>}
+
+                        {/* Dropdown de resultados */}
+                        {searchOpen[idx] && filtered.length > 0 && (
+                          <div className="absolute z-20 left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+                            {filtered.map((prod) => (
+                              <button
+                                key={prod.id}
+                                onClick={() => handleSelectProduct(idx, prod)}
+                                className="w-full text-left px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-700 border-b border-slate-100 dark:border-slate-700 last:border-0 cursor-pointer"
+                              >
+                                <p className="text-xs font-medium text-slate-800 dark:text-white">{prod.commercialName}</p>
+                                <p className="text-[10px] text-slate-400">{prod.genericName} · {prod.lab} · {prod.barcode}</p>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {searchOpen[idx] && (searchQueries[idx] || '').trim().length > 0 && filtered.length === 0 && (
+                          <div className="absolute z-20 left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3">
+                            <p className="text-xs text-slate-400 text-center">No se encontraron productos</p>
+                            <button
+                              onClick={() => {
+                                updateItem(idx, 'productName', searchQueries[idx] || '');
+                                setSearchOpen((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = false;
+                                  return next;
+                                });
+                              }}
+                              className="mt-2 w-full text-center text-xs text-emerald-600 hover:text-emerald-700 cursor-pointer"
+                            >
+                              Usar "{searchQueries[idx]}" como nombre manual
+                            </button>
+                          </div>
                         )}
                       </div>
 
@@ -376,8 +547,9 @@ export default function NuevaCompraModal({ onClose }: Props) {
                         <input
                           type="date" value={item.expiryDate}
                           onChange={(e) => updateItem(idx, 'expiryDate', e.target.value)}
-                          className={`w-full p-1.5 rounded-lg border text-xs bg-white dark:bg-slate-800 text-slate-800 dark:text-white ${errors[`item_${idx}_exp`] ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
+                          className={`w-full p-1.5 rounded-lg border text-xs bg-white dark:bg-slate-800 text-slate-800 dark:text-white ${!item.expiryDate ? 'border-amber-300 dark:border-amber-700' : 'border-slate-200 dark:border-slate-700'}`}
                         />
+                        {!item.expiryDate && <p className="text-[10px] text-amber-500 mt-0.5">Sin fecha</p>}
                       </div>
 
                       {/* Eliminar */}
@@ -419,6 +591,24 @@ export default function NuevaCompraModal({ onClose }: Props) {
               })}
             </div>
           </div>
+
+          {/* Warnings de fechas faltantes */}
+          {warnings.length > 0 && (
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl">
+              <div className="flex items-start gap-2">
+                <i className="ri-alarm-warning-fill text-amber-500 text-lg mt-0.5"></i>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">Faltan fechas de vencimiento</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {warnings.map((w, i) => (
+                      <li key={i} className="text-xs text-amber-600 dark:text-amber-400">• {w}</li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-amber-500 mt-1">Podés guardar igual, pero recordá completarlas luego desde el detalle de la compra.</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── Resumen total ── */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -468,8 +658,17 @@ export default function NuevaCompraModal({ onClose }: Props) {
             <button onClick={onClose} className="px-4 py-2 text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-sm cursor-pointer whitespace-nowrap">
               Cancelar
             </button>
+            {warnings.length > 0 && (
+              <button
+                onClick={() => handleSave(true)}
+                disabled={saving}
+                className="px-4 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 text-sm cursor-pointer whitespace-nowrap flex items-center gap-2"
+              >
+                <i className="ri-save-line"></i> Guardar sin fechas
+              </button>
+            )}
             <button
-              onClick={handleSave}
+              onClick={() => handleSave(false)}
               disabled={saving}
               className="px-5 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm cursor-pointer whitespace-nowrap flex items-center gap-2"
             >

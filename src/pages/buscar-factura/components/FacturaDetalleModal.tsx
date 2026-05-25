@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { X, Printer, Package, User, Calendar, CreditCard, Hash, CheckCircle, XCircle } from 'lucide-react';
+import { X, Printer, Package, User, Calendar, CreditCard, Hash, CheckCircle, XCircle, Loader } from 'lucide-react';
 import BarcodeDisplay from '@/pages/pago/components/BarcodeDisplay';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/store/authStore';
 import { useAppStore } from '@/store/appStore';
 import { formatCurrency } from '@/utils/formatters';
+import { printReceipt } from '@/services/printService';
 
 interface FacturaDetalle {
   id: string;
@@ -39,12 +40,14 @@ interface FacturaDetalleModalProps {
 
 export default function FacturaDetalleModal({ facturaId, onClose }: FacturaDetalleModalProps) {
   const { companySettings } = useAuthStore();
-  const { settings: appSettings } = useAppStore();
+  const { settings: appSettings, printerSettings } = useAppStore();
   const company = companySettings ?? appSettings;
 
   const [factura, setFactura] = useState<FacturaDetalle | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [printStatus, setPrintStatus] = useState<'idle' | 'printing' | 'success' | 'error'>('idle');
+  const [printMsg, setPrintMsg] = useState('');
 
   useEffect(() => {
     loadFactura();
@@ -120,43 +123,55 @@ export default function FacturaDetalleModal({ facturaId, onClose }: FacturaDetal
     }
   };
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
     if (!factura) return;
-    const lines = [
-      '================================',
-      (company.name || 'FARMACIA').toUpperCase().padStart(20 + Math.floor((company.name || '').length / 2), ' '),
-      company.rnc ? `RNC: ${company.rnc}` : '',
-      company.phone ? `Tel: ${company.phone}` : '',
-      company.address || '',
-      factura.sucursal_nombre || '',
-      '================================',
-      `Fecha: ${new Date(factura.created_at).toLocaleString('es-DO')}`,
-      `NCF: ${factura.ncf}`,
-      `ID: ${factura.id.slice(0, 8)}...`,
-      `Estado: ${factura.estado.toUpperCase()}`,
-      '--------------------------------',
-      ...factura.items.map((i) =>
-        `${i.cantidad}x ${i.nombre_producto.slice(0, 20).padEnd(20)} ${formatCurrency(i.subtotal)}`
-      ),
-      '--------------------------------',
-      `Subtotal:  ${formatCurrency(factura.subtotal)}`,
-      `ITBIS 18%: ${formatCurrency(factura.itbis_total)}`,
-      factura.descuento > 0 ? `Descuento: -${formatCurrency(factura.descuento)}` : '',
-      `TOTAL:     ${formatCurrency(factura.total)}`,
-      '================================',
-      `Cajero: ${factura.cajero_nombre}`,
-      factura.cliente_nombre ? `Cliente: ${factura.cliente_nombre}` : '',
-      '================================',
-      '      ¡Gracias por su compra!   ',
-    ].filter(Boolean);
+    setPrintStatus('printing');
+    setPrintMsg('Enviando a impresora...');
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `factura_${factura.ncf}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await printReceipt({
+        companyName: company.name || 'FARMACIA',
+        branchName: factura.sucursal_nombre || 'SUCURSAL',
+        rnc: company.rnc,
+        phone: company.phone,
+        address: company.address,
+        website: company.website,
+        logo: company.logo,
+        invoiceHeader: (company as unknown as Record<string, string>).invoiceHeader,
+        invoiceFooter: printerSettings.footerText,
+        invoiceColor: (company as unknown as Record<string, string>).invoiceColor || '#10b981',
+        showLogo: printerSettings.printLogo,
+        ncf: factura.ncf,
+        numeroFactura: factura.numero_factura,
+        facturaId: factura.id,
+        fecha: new Date(factura.created_at).toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' }),
+        cajero: factura.cajero_nombre,
+        clienteNombre: factura.cliente_nombre,
+        metodoPago: factura.metodo_pago,
+        items: factura.items.map((i) => ({
+          name: i.nombre_producto,
+          quantity: i.cantidad,
+          unitPrice: i.precio,
+          lineDiscount: i.descuento,
+        })),
+        subtotal: factura.subtotal,
+        itbis: factura.itbis_total,
+        discountAmount: factura.descuento,
+        globalDiscount: 0,
+        total: factura.total,
+        printerType: printerSettings.printerType as '58mm' | '80mm' | 'A4',
+        fontSize: printerSettings.fontSize as 'small' | 'medium' | 'large',
+        copies: printerSettings.copies,
+      }, true);
+
+      setPrintStatus('success');
+      setPrintMsg('Factura impresa correctamente');
+      setTimeout(() => setPrintStatus('idle'), 3000);
+    } catch (err) {
+      setPrintStatus('error');
+      setPrintMsg(err instanceof Error ? err.message : 'No se pudo imprimir. Verifique la impresora.');
+      setTimeout(() => setPrintStatus('idle'), 4000);
+    }
   };
 
   const estadoColor = factura?.estado === 'activa'
@@ -357,20 +372,41 @@ export default function FacturaDetalleModal({ facturaId, onClose }: FacturaDetal
 
         {/* Footer */}
         {factura && (
-          <div className="flex gap-3 px-5 py-4 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
-            <button
-              onClick={onClose}
-              className="flex-1 py-2.5 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors whitespace-nowrap"
-            >
-              Cerrar
-            </button>
-            <button
-              onClick={handlePrint}
-              className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
-            >
-              <Printer className="w-4 h-4" />
-              Imprimir
-            </button>
+          <div className="flex flex-col gap-2 px-5 py-4 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
+            {/* Estado de impresión */}
+            {printStatus !== 'idle' && (
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium ${
+                printStatus === 'printing'
+                  ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                  : printStatus === 'success'
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                  : 'bg-rose-50 text-rose-700 border border-rose-200'
+              }`}>
+                {printStatus === 'printing' && <Loader className="w-3.5 h-3.5 animate-spin" />}
+                {printStatus === 'success' && <CheckCircle className="w-3.5 h-3.5" />}
+                {printStatus === 'error' && <XCircle className="w-3.5 h-3.5" />}
+                {printMsg}
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={onClose}
+                className="flex-1 py-2.5 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer transition-colors whitespace-nowrap"
+              >
+                Cerrar
+              </button>
+              <button
+                onClick={handlePrint}
+                disabled={printStatus === 'printing'}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
+              >
+                {printStatus === 'printing' ? (
+                  <><Loader className="w-4 h-4 animate-spin" /> Imprimiendo...</>
+                ) : (
+                  <><Printer className="w-4 h-4" /> Imprimir</>
+                )}
+              </button>
+            </div>
           </div>
         )}
       </div>

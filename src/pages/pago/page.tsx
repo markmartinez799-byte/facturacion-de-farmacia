@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { usePOSStore } from '@/store/posStore';
 import { useAuthStore } from '@/store/authStore';
 import { useAppStore } from '@/store/appStore';
-import { playBeep, playCashRegister } from '@/utils/sounds';
+import { playBeep, playCashRegister, playErrorSound } from '@/utils/sounds';
 import { formatCurrency } from '@/utils/formatters';
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Calculator,
@@ -19,7 +19,9 @@ import SavedTicketsModal from './components/SavedTicketsModal';
 import BuscadorStockModal from './components/BuscadorStockModal';
 import ProductPreviewModal from './components/ProductPreviewModal';
 import { saveBillingToSupabase } from '@/services/billingService';
+import { printReceipt, getTodayPrintCount, checkPrinterStatus, hasElectronBridge } from '@/services/printService';
 import BarcodeDisplay from './components/BarcodeDisplay';
+import { useFastSearch } from '@/hooks/useFastSearch';
 
 const NCF_OPTIONS: { value: NCFType; label: string; color: string }[] = [
   { value: 'B02', label: 'B02 – Consumidor Final', color: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300' },
@@ -30,7 +32,7 @@ const NCF_OPTIONS: { value: NCFType; label: string; color: string }[] = [
 
 export default function PagoPage() {
   const { currentUser, currentBranch, companySettings, loadCompanySettings } = useAuthStore();
-  const { isSoundEnabled, settings: appSettings } = useAppStore();
+  const { isSoundEnabled, settings: appSettings, printerSettings } = useAppStore();
 
   // Datos de empresa: prioridad companySettings (DB) > appSettings (local)
   const company = companySettings ?? appSettings;
@@ -43,7 +45,13 @@ export default function PagoPage() {
     savedTickets, saveTicket, calcTotals, getExpiringProducts,
   } = usePOSStore();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const {
+    searchQuery,
+    setSearchQuery,
+    filteredProducts,
+    totalProducts,
+  } = useFastSearch(products);
+
   const [showCheckout, setShowCheckout] = useState(false);
   const [showStockModal, setShowStockModal] = useState(false);
   const [showBuscadorStock, setShowBuscadorStock] = useState(false);
@@ -65,6 +73,51 @@ export default function PagoPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [saleResult, setSaleResult] = useState<{ ncf: string; total: number; facturaId: string; numeroFactura?: number } | null>(null);
   const [billingError, setBillingError] = useState<string | null>(null);
+
+  // Print flow states
+  const [shouldPrintThisSale, setShouldPrintThisSale] = useState(true);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const [printStatus, setPrintStatus] = useState<'idle' | 'printing' | 'success' | 'error'>('idle');
+  const [printMsg, setPrintMsg] = useState('');
+  const [showPrintToast, setShowPrintToast] = useState(false);
+  const [printToastMsg, setPrintToastMsg] = useState('');
+
+  // Print counter today
+  const [todayPrintCount, setTodayPrintCount] = useState(() => getTodayPrintCount());
+
+  // Printer connection status
+  const [printerStatus, setPrinterStatus] = useState<{ connected: boolean; status: string } | null>(null);
+  const isElectron = hasElectronBridge();
+
+  // Refresh print counter periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTodayPrintCount(getTodayPrintCount());
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Check printer status periodically
+  useEffect(() => {
+    const check = async () => {
+      if (printerSettings.printerName) {
+        const status = await checkPrinterStatus(printerSettings.printerName);
+        setPrinterStatus(status);
+      } else {
+        setPrinterStatus(null);
+      }
+    };
+    check();
+    const interval = setInterval(check, 20000);
+    return () => clearInterval(interval);
+  }, [printerSettings.printerName]);
+
+  // Sound alert on print error
+  useEffect(() => {
+    if (printStatus === 'error') {
+      playErrorSound();
+    }
+  }, [printStatus]);
 
   // Cargar configuración de empresa al montar
   useEffect(() => {
@@ -103,14 +156,6 @@ export default function PagoPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [cart, clearCart]);
 
-  const filteredProducts = products.filter(
-    (p) =>
-      p.isActive &&
-      (p.commercialName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.genericName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.barcode.includes(searchQuery))
-  );
-
   const handleAddToCart = (product: Product) => {
     addToCart(product);
     if (isSoundEnabled) playBeep();
@@ -126,15 +171,104 @@ export default function PagoPage() {
     handleAddToCart(product);
   };
 
+  // ── PRINTING ──
+  const showToast = (msg: string, duration = 3000) => {
+    setPrintToastMsg(msg);
+    setShowPrintToast(true);
+    setTimeout(() => setShowPrintToast(false), duration);
+  };
+
+  const processPrint = async (
+    ncf: string,
+    facturaId: string,
+    numeroFactura: number | undefined,
+    cartSnapshot: typeof cart,
+    totalsSnapshot: ReturnType<typeof calcTotals>,
+    cashReceivedNum: number,
+    changeNum: number
+  ) => {
+    setIsPrinting(true);
+    setPrintStatus('printing');
+    setPrintMsg('Imprimiendo factura...');
+    showToast('Imprimiendo factura...', 2000);
+
+    const appSt = useAppStore.getState();
+    const authSt = useAuthStore.getState();
+    const ps = appSt.printerSettings;
+    const comp = authSt.companySettings ?? appSt.settings;
+
+    try {
+      await printReceipt({
+        companyName: comp.name || 'FARMACIA',
+        branchName: currentBranch?.name || '',
+        rnc: comp.rnc,
+        phone: comp.phone,
+        address: comp.address,
+        website: comp.website,
+        logo: comp.logo,
+        invoiceHeader: (comp as unknown as Record<string, string>).invoiceHeader,
+        invoiceFooter: ps.footerText,
+        invoiceColor: (comp as unknown as Record<string, string>).invoiceColor || '#10b981',
+        showLogo: ps.printLogo,
+        ncf,
+        numeroFactura,
+        facturaId,
+        fecha: new Date().toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' }),
+        cajero: currentUser?.name || '',
+        clienteNombre: localClientName || currentClient?.name,
+        clienteRnc: localClientRnc || currentClient?.rnc,
+        metodoPago: paymentMethod,
+        items: cartSnapshot.map((i) => ({
+          name: i.product.commercialName,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          lineDiscount: i.lineDiscount,
+        })),
+        subtotal: totalsSnapshot.subtotal,
+        itbis: totalsSnapshot.itbis,
+        discountAmount: totalsSnapshot.discountAmount,
+        globalDiscount: totalsSnapshot.globalDiscount,
+        insuranceCoverage: totalsSnapshot.insuranceCoverage,
+        insuranceName: activeInsurance?.planName,
+        total: totalsSnapshot.total,
+        cashReceived: cashReceivedNum > 0 ? cashReceivedNum : undefined,
+        change: changeNum > 0 ? changeNum : undefined,
+        printerType: ps.printerType as '58mm' | '80mm' | 'A4',
+        fontSize: ps.fontSize as 'small' | 'medium' | 'large',
+        copies: ps.copies,
+      }, printerSettings.printerName, true);
+
+      setPrintStatus('success');
+      setPrintMsg('Factura impresa correctamente');
+      showToast('Factura impresa correctamente');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'No se pudo imprimir. Verifique que la impresora esté encendida y conectada.';
+      setPrintStatus('error');
+      setPrintMsg(msg);
+      showToast(msg, 4000);
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
   const handleCompleteSale = async () => {
     if (!currentUser || !currentBranch) return;
     setIsSaving(true);
     setBillingError(null);
     setClientInfo(localClientRnc, localClientName);
+    setPrintStatus('idle');
+
+    // Snapshot del carrito ANTES de limpiar
+    const cartSnapshot = [...cart];
+    const totalsSnapshot = { subtotal, itbis, discountAmount, globalDiscount, total, insuranceCoverage };
+    const cashReceivedNum = parseFloat(cashReceived || '0');
+    const changeNum = paymentMethod === 'efectivo' ? cashReceivedNum - total : 0;
+    const printMode = useAppStore.getState().printerSettings.printMode;
 
     // 1. Guardar en Supabase (NCF real desde trigger)
     const billingResult = await saveBillingToSupabase({
       usuarioId: currentUser.id,
+      usuarioName: currentUser?.name,
       sucursalId: currentBranch.id,
       clienteId: currentClient?.id,
       tipoNcf: ncfType,
@@ -162,13 +296,94 @@ export default function PagoPage() {
     setCashReceived('');
     setCardAmount('');
 
+    const ncfFinal = billingResult.ncf || sale?.ncf || '';
+    const facturaIdFinal = billingResult.facturaId || '';
+    const numeroFacturaFinal = billingResult.numeroFactura;
+
     // 3. Mostrar modal de éxito con NCF real
     setSaleResult({
-      ncf: billingResult.ncf || sale?.ncf || '',
+      ncf: ncfFinal,
       total,
-      facturaId: billingResult.facturaId || '',
-      numeroFactura: billingResult.numeroFactura,
+      facturaId: facturaIdFinal,
+      numeroFactura: numeroFacturaFinal,
     });
+
+    // 4. Imprimir según configuración
+    const willPrint = printMode === 'auto' || (printMode === 'ask' && shouldPrintThisSale);
+    if (willPrint) {
+      await processPrint(ncfFinal, facturaIdFinal, numeroFacturaFinal, cartSnapshot, totalsSnapshot, cashReceivedNum, changeNum);
+    } else {
+      setPrintStatus('success');
+      setPrintMsg('Factura registrada sin imprimir');
+      showToast('Factura registrada correctamente');
+    }
+  };
+
+  const handleReprint = async () => {
+    if (!saleResult) return;
+    const appSt = useAppStore.getState();
+    const ps = appSt.printerSettings;
+    const authSt = useAuthStore.getState();
+    const comp = authSt.companySettings ?? appSt.settings;
+    const itemsForPrint = cart.length > 0 ? cart : [];
+    const totalsSnapshot = { subtotal, itbis, discountAmount, globalDiscount, total, insuranceCoverage };
+    const cashReceivedNum = parseFloat(cashReceived || '0');
+    const changeNum = paymentMethod === 'efectivo' ? cashReceivedNum - total : 0;
+
+    setIsPrinting(true);
+    setPrintStatus('printing');
+    setPrintMsg('Reimprimiendo factura...');
+    try {
+      await printReceipt({
+        companyName: comp.name || 'FARMACIA',
+        branchName: currentBranch?.name || '',
+        rnc: comp.rnc,
+        phone: comp.phone,
+        address: comp.address,
+        website: comp.website,
+        logo: comp.logo,
+        invoiceHeader: (comp as unknown as Record<string, string>).invoiceHeader,
+        invoiceFooter: ps.footerText,
+        invoiceColor: (comp as unknown as Record<string, string>).invoiceColor || '#10b981',
+        showLogo: ps.printLogo,
+        ncf: saleResult.ncf,
+        numeroFactura: saleResult.numeroFactura,
+        facturaId: saleResult.facturaId,
+        fecha: new Date().toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' }),
+        cajero: currentUser?.name || '',
+        clienteNombre: localClientName || currentClient?.name,
+        clienteRnc: localClientRnc || currentClient?.rnc,
+        metodoPago: paymentMethod,
+        items: itemsForPrint.map((i) => ({
+          name: i.product.commercialName,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          lineDiscount: i.lineDiscount,
+        })),
+        subtotal: totalsSnapshot.subtotal,
+        itbis: totalsSnapshot.itbis,
+        discountAmount: totalsSnapshot.discountAmount,
+        globalDiscount: totalsSnapshot.globalDiscount,
+        insuranceCoverage: totalsSnapshot.insuranceCoverage,
+        insuranceName: activeInsurance?.planName,
+        total: saleResult.total,
+        cashReceived: cashReceivedNum > 0 ? cashReceivedNum : undefined,
+        change: changeNum > 0 ? changeNum : undefined,
+        printerType: ps.printerType as '58mm' | '80mm' | 'A4',
+        fontSize: ps.fontSize as 'small' | 'medium' | 'large',
+        copies: ps.copies,
+      }, printerSettings.printerName, true);
+      setPrintStatus('success');
+      setPrintMsg('Reimpresión exitosa');
+      showToast('Reimpresión exitosa');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error al reimprimir';
+      setPrintStatus('error');
+      setPrintMsg(msg);
+      showToast(msg, 4000);
+    } finally {
+      setIsPrinting(false);
+    }
   };
 
   const handleSaveTicket = () => {
@@ -206,6 +421,102 @@ export default function PagoPage() {
         savedTicketsCount={savedTickets.length}
         expiringCount={expiringProducts.length}
       />
+
+      {/* Active Cashier Status Bar */}
+      {currentUser && (
+        <div className="flex-shrink-0 bg-slate-900 dark:bg-slate-950 rounded-lg px-4 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-xs">
+              {currentUser.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()}
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-slate-400">Cajero activo:</span>
+              <span className="font-semibold text-white">{currentUser.name}</span>
+              {currentBranch && (
+                <>
+                  <span className="text-slate-600">|</span>
+                  <span className="text-slate-400">Sucursal:</span>
+                  <span className="font-medium text-emerald-400">{currentBranch.name}</span>
+                </>
+              )}
+              {/* Product count / performance indicator */}
+              {totalProducts > 0 && (
+                <>
+                  <span className="text-slate-600">|</span>
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      totalProducts < 3000
+                        ? 'bg-emerald-500/15 text-emerald-400'
+                        : totalProducts < 6000
+                        ? 'bg-amber-500/15 text-amber-400'
+                        : 'bg-rose-500/15 text-rose-400'
+                    }`}
+                    title={`${totalProducts.toLocaleString()} productos cargados en memoria`}
+                  >
+                    <i className="ri-database-2-line mr-1"></i>
+                    {totalProducts.toLocaleString()} prod.
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Print counter */}
+            {todayPrintCount > 0 && (
+              <span
+                className="flex items-center gap-1 text-xs text-slate-400 bg-slate-800 dark:bg-slate-700 px-2 py-0.5 rounded-full"
+                title="Facturas impresas hoy"
+              >
+                <Printer className="w-3 h-3 text-emerald-400" />
+                {todayPrintCount} imp.
+              </span>
+            )}
+            {/* Printer status badge */}
+            {isElectron && (
+              <span
+                className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full cursor-pointer ${
+                  printerStatus?.connected
+                    ? 'text-emerald-400 bg-emerald-500/10'
+                    : printerStatus
+                    ? 'text-rose-400 bg-rose-500/15'
+                    : 'text-slate-400 bg-slate-800'
+                }`}
+                title={
+                  printerStatus?.connected
+                    ? `Impresora "${printerSettings.printerName}" conectada y lista`
+                    : printerStatus
+                    ? `Impresora "${printerSettings.printerName}" desconectada (${printerStatus.status})`
+                    : 'Sin impresora configurada'
+                }
+              >
+                {printerStatus?.connected ? (
+                  <>
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
+                    Impresora OK
+                  </>
+                ) : printerStatus ? (
+                  <>
+                    <span className="w-1.5 h-1.5 bg-rose-400 rounded-full" />
+                    Sin impresora
+                  </>
+                ) : (
+                  <>
+                    <span className="w-1.5 h-1.5 bg-slate-500 rounded-full" />
+                    Sin impresora
+                  </>
+                )}
+              </span>
+            )}
+            <span className="text-xs text-slate-500">
+              {new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+            <span className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+              En línea
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Main 2-column layout — fills remaining height, no external scroll */}
       <div className="flex-1 flex gap-4 mt-3 overflow-hidden min-h-0">
@@ -729,6 +1040,45 @@ export default function PagoPage() {
                 </div>
               )}
 
+              {/* Opción de impresión (solo en modo ask) */}
+              {(() => {
+                const mode = useAppStore.getState().printerSettings.printMode;
+                if (mode === 'ask') {
+                  return (
+                    <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                      <div className="flex items-center gap-2">
+                        <Printer className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                        <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Imprimir factura</span>
+                      </div>
+                      <button
+                        onClick={() => setShouldPrintThisSale(!shouldPrintThisSale)}
+                        className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
+                          shouldPrintThisSale ? 'bg-emerald-500' : 'bg-slate-300'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                          shouldPrintThisSale ? 'translate-x-5' : 'translate-x-0'
+                        }`} />
+                      </button>
+                    </div>
+                  );
+                }
+                if (mode === 'auto') {
+                  return (
+                    <div className="flex items-center gap-2 p-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300">
+                      <i className="ri-flashlight-fill text-emerald-600"></i>
+                      Se imprimirá automáticamente al completar la venta
+                    </div>
+                  );
+                }
+                return (
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
+                    <i className="ri-forbid-line text-slate-400"></i>
+                    Modo sin impresión activado — solo se registrará en el sistema
+                  </div>
+                );
+              })()}
+
               <div className="pt-3 border-t border-slate-200 dark:border-slate-700">
                 <div className="flex justify-between items-center mb-4">
                   <span className="font-semibold text-slate-800 dark:text-white">Total cobrado</span>
@@ -749,12 +1099,17 @@ export default function PagoPage() {
                   {isSaving ? (
                     <>
                       <Loader className="w-5 h-5 animate-spin" />
-                      Guardando en Supabase...
+                      Guardando factura...
                     </>
                   ) : (
                     <>
-                      <Printer className="w-5 h-5" />
-                      Completar e Imprimir
+                      {(() => {
+                        const mode = useAppStore.getState().printerSettings.printMode;
+                        if (mode === 'auto') {
+                          return <><Printer className="w-5 h-5" /> Completar e Imprimir</>;
+                        }
+                        return <><CheckCircle className="w-5 h-5" /> Completar Venta</>;
+                      })()}
                     </>
                   )}
                 </button>
@@ -776,6 +1131,30 @@ export default function PagoPage() {
               <h3 className="text-lg font-bold text-white">¡Venta Completada!</h3>
               <p className="text-emerald-100 text-xs mt-0.5">{new Date().toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' })}</p>
             </div>
+
+            {/* Estado de impresión */}
+            {printStatus !== 'idle' && (
+              <div className={`px-5 py-2.5 border-b flex items-center gap-2 ${
+                printStatus === 'printing'
+                  ? 'bg-sky-50 border-sky-200 dark:bg-sky-900/20 dark:border-sky-800'
+                  : printStatus === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 dark:bg-emerald-900/20 dark:border-emerald-800'
+                  : 'bg-rose-50 border-rose-200 dark:bg-rose-900/20 dark:border-rose-800'
+              }`}>
+                {printStatus === 'printing' && <Loader className="w-4 h-4 text-sky-600 dark:text-sky-400 animate-spin" />}
+                {printStatus === 'success' && <CheckCircle className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+                {printStatus === 'error' && <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />}
+                <span className={`text-xs font-medium ${
+                  printStatus === 'printing'
+                    ? 'text-sky-700 dark:text-sky-300'
+                    : printStatus === 'success'
+                    ? 'text-emerald-700 dark:text-emerald-300'
+                    : 'text-rose-700 dark:text-rose-300'
+                }`}>
+                  {printMsg}
+                </span>
+              </div>
+            )}
 
             {/* Ticket body */}
             <div className="px-5 py-4">
@@ -887,58 +1266,41 @@ export default function PagoPage() {
             </div>
 
             {/* Botones */}
-            <div className="flex gap-2 px-5 pb-5">
-              <button
-                onClick={() => setSaleResult(null)}
-                className="flex-1 py-2.5 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors whitespace-nowrap"
-              >
-                Nueva Venta
-              </button>
-              <button
-                onClick={() => {
-                  if (saleResult) {
-                    const companyLine = (company.name || 'FARMACIA').toUpperCase().padStart(20 + Math.floor((company.name || '').length / 2), ' ');
-                    const rncLine = company.rnc ? `RNC: ${company.rnc}` : '';
-                    const phoneLine = company.phone ? `Tel: ${company.phone}` : '';
-                    const numFactura = saleResult.numeroFactura
-                      ? String(saleResult.numeroFactura).padStart(10, '0')
-                      : saleResult.facturaId.slice(0, 8);
-                    const lines = [
-                      '================================',
-                      companyLine,
-                      rncLine,
-                      phoneLine,
-                      currentBranch?.name || '',
-                      '================================',
-                      `Fecha: ${new Date().toLocaleString('es-DO')}`,
-                      `Cajero: ${currentUser?.name || ''}`,
-                      '--------------------------------',
-                      ...cart.map((i) => `${i.quantity}x ${i.product.commercialName.slice(0,20).padEnd(20)} ${formatCurrency(i.quantity * i.unitPrice * (1 - i.lineDiscount / 100))}`),
-                      '--------------------------------',
-                      `Subtotal:  ${formatCurrency(subtotal)}`,
-                      `ITBIS 18%: ${formatCurrency(itbis)}`,
-                      `TOTAL:     ${formatCurrency(saleResult.total)}`,
-                      '================================',
-                      `NCF:       ${saleResult.ncf}`,
-                      `No. Factura: ${numFactura}`,
-                      '================================',
-                      '      ¡Gracias por su compra!   ',
-                    ];
-                    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `factura_${saleResult.ncf}.txt`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }
-                  setSaleResult(null);
-                }}
-                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
-              >
-                <Printer className="w-4 h-4" />
-                Imprimir
-              </button>
+            <div className="flex flex-col gap-2 px-5 pb-5">
+              {printStatus === 'error' && (
+                <button
+                  onClick={handleReprint}
+                  disabled={isPrinting}
+                  className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  {isPrinting ? (
+                    <><Loader className="w-4 h-4 animate-spin" /> Reimprimiendo...</>
+                  ) : (
+                    <><Printer className="w-4 h-4" /> Reintentar impresión</>
+                  )}
+                </button>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSaleResult(null)}
+                  className="flex-1 py-2.5 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  Nueva Venta
+                </button>
+                {(printStatus !== 'success' || printStatus === 'idle') && (
+                  <button
+                    onClick={handleReprint}
+                    disabled={isPrinting}
+                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                  >
+                    {isPrinting ? (
+                      <><Loader className="w-4 h-4 animate-spin" /> Imprimiendo...</>
+                    ) : (
+                      <><Printer className="w-4 h-4" /> Imprimir</>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1040,6 +1402,25 @@ export default function PagoPage() {
             }
           }}
         />
+      )}
+      {/* ── PRINT TOAST ── */}
+      {showPrintToast && (
+        <div className="fixed bottom-6 right-6 z-[60] animate-bounce-in">
+          <div className="bg-slate-900 dark:bg-slate-950 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 min-w-[260px]">
+            <div className="w-8 h-8 bg-emerald-500/20 rounded-full flex items-center justify-center flex-shrink-0">
+              <i className="ri-printer-line text-emerald-400 text-lg"></i>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{printToastMsg}</p>
+            </div>
+            <button
+              onClick={() => setShowPrintToast(false)}
+              className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-white cursor-pointer transition-colors flex-shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

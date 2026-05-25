@@ -18,7 +18,13 @@ export function TopBar() {
     navigate('/acceso');
   };
 
-  const roleLabel = currentUser?.role === 'admin' ? 'Administrador' : 'Cajero';
+  const roleLabels: Record<string, string> = {
+    admin: 'Administrador',
+    manager: 'Gerente',
+    supervisor: 'Supervisor',
+    cashier: 'Cajero',
+  };
+  const roleLabel = currentUser ? roleLabels[currentUser.role] || 'Usuario' : '';
 
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -62,7 +68,7 @@ export function TopBar() {
   return (
     <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between px-4 lg:px-6 transition-colors duration-300">
       <div className="flex items-center gap-3">
-        <img src={settings.logo} alt="GENOSAN" className="h-10 w-10 object-contain" />
+        <img src="https://static.readdy.ai/image/5bb0e04c11c0331c3337356b97ecb5ff/1602503810eb7b5d51244c8944e22090.png" alt="GENOSAN" className="h-10 w-10 object-contain" />
         <div className="hidden sm:block">
           <h1 className="font-sora font-semibold text-slate-800 dark:text-white text-lg leading-tight">
             {settings.name}

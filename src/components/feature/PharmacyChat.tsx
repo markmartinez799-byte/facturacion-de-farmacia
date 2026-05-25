@@ -65,7 +65,7 @@ export default function PharmacyChat() {
 
   // Determine role — map 'admin'/'cashier'/'manager' to system roles
   const rawRole = currentUser?.role ?? 'cliente';
-  const userRole = rawRole === 'admin' ? 'admin' : rawRole === 'cashier' || rawRole === 'manager' ? 'empleado' : 'cliente';
+  const userRole = rawRole === 'admin' ? 'admin' : rawRole === 'cashier' || rawRole === 'manager' || rawRole === 'supervisor' ? 'empleado' : 'cliente';
 
   const roleInfo = ROLE_LABELS[userRole] ?? ROLE_LABELS.cliente;
 

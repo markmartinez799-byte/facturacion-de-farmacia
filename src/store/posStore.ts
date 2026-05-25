@@ -9,6 +9,7 @@ import {
   upsertSupplier, deleteSupplierRemote,
   insertSupplierPurchase, insertReturnToSupplier, updateReturnStatusRemote,
   updatePurchasePaymentStatus, insertAbono, deletePurchaseRemote,
+  updatePurchaseRemote,
   insertSaleRemote,
   loadAllData,
 } from '@/services/supabaseService';
@@ -28,6 +29,7 @@ interface POSState {
   updateSupplier: (id: string, updates: Partial<Supplier>) => Promise<void>;
   deleteSupplier: (id: string) => Promise<void>;
   addSupplierPurchase: (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>) => Promise<void>;
+  editPurchase: (id: string, updates: Partial<SupplierPurchase>) => Promise<void>;
   markPurchasePaid: (id: string) => Promise<void>;
   addAbono: (abono: Omit<AbonoCompra, 'id' | 'createdAt'>) => Promise<void>;
   addReturnToSupplier: (ret: Omit<ReturnToSupplier, 'id' | 'createdAt'>) => Promise<void>;
@@ -157,6 +159,15 @@ export const usePOSStore = create<POSState>()(
         const newPurchase: SupplierPurchase = { ...purchaseData, id: generateId(), createdAt: now() };
         set((s) => ({ supplierPurchases: [...s.supplierPurchases, newPurchase] }));
         await insertSupplierPurchase(newPurchase);
+      },
+
+      editPurchase: async (id, updates) => {
+        set((s) => ({
+          supplierPurchases: s.supplierPurchases.map((p) =>
+            p.id === id ? { ...p, ...updates, wasEditedOnce: true } : p
+          ),
+        }));
+        await updatePurchaseRemote(id, { ...updates, wasEditedOnce: true });
       },
 
       markPurchasePaid: async (id) => {

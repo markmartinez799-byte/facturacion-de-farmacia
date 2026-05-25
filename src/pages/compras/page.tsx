@@ -321,7 +321,7 @@ export default function ComprasPage() {
                       </div>
                       <div className="flex items-center gap-3 mt-1 flex-wrap">
                         <span className="text-xs text-slate-400">
-                          <i className="ri-calendar-line mr-1"></i>{formatDateShort(purchase.purchaseDate)}
+                          <i className="ri-calendar-line mr-1"></i>{formatDateShort(purchase.fechaFacturacion || purchase.purchaseDate)}
                         </span>
                         <span className={`text-xs px-1.5 py-0.5 rounded ${purchase.tipoPago === 'contado' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400' : 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400'}`}>
                           {purchase.tipoPago === 'contado' ? 'Contado' : 'Crédito'}

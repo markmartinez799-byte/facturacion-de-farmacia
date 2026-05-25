@@ -8,20 +8,20 @@ interface NavItem {
   path: string;
   label: string;
   icon: React.ReactNode;
-  roles: ('admin' | 'cashier')[];
+  roles: ('admin' | 'cashier' | 'supervisor' | 'manager')[];
 }
 
 const navItems: NavItem[] = [
-  { path: '/panel', label: 'Panel', icon: <LayoutDashboard className="w-5 h-5" />, roles: ['admin'] },
-  { path: '/pago', label: 'Cobro', icon: <CreditCard className="w-5 h-5" />, roles: ['admin', 'cashier'] },
-  { path: '/productos', label: 'Productos', icon: <Package className="w-5 h-5" />, roles: ['admin'] },
-  { path: '/proveedores', label: 'Proveedores', icon: <Truck className="w-5 h-5" />, roles: ['admin'] },
-  { path: '/compras', label: 'Compras', icon: <ShoppingBag className="w-5 h-5" />, roles: ['admin'] },
-  { path: '/vencimientos', label: 'Vencimientos', icon: <AlertTriangle className="w-5 h-5" />, roles: ['admin'] },
-  { path: '/lista-interes', label: 'Lista de Interés', icon: <Heart className="w-5 h-5" />, roles: ['admin', 'cashier'] },
-  { path: '/buscar-factura', label: 'Buscar Factura', icon: <ScanLine className="w-5 h-5" />, roles: ['admin', 'cashier'] },
-  { path: '/reportes', label: 'Reportes', icon: <BarChart3 className="w-5 h-5" />, roles: ['admin'] },
-  { path: '/configuracion', label: 'Configuración', icon: <Settings className="w-5 h-5" />, roles: ['admin'] },
+  { path: '/panel', label: 'Panel', icon: <LayoutDashboard className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
+  { path: '/pago', label: 'Cobro', icon: <CreditCard className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
+  { path: '/productos', label: 'Productos', icon: <Package className="w-5 h-5" />, roles: ['admin', 'manager'] },
+  { path: '/proveedores', label: 'Proveedores', icon: <Truck className="w-5 h-5" />, roles: ['admin', 'manager'] },
+  { path: '/compras', label: 'Compras', icon: <ShoppingBag className="w-5 h-5" />, roles: ['admin', 'manager'] },
+  { path: '/vencimientos', label: 'Vencimientos', icon: <AlertTriangle className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
+  { path: '/lista-interes', label: 'Lista de Interés', icon: <Heart className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
+  { path: '/buscar-factura', label: 'Buscar Factura', icon: <ScanLine className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
+  { path: '/reportes', label: 'Reportes', icon: <BarChart3 className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
+  { path: '/configuracion', label: 'Configuración', icon: <Settings className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
 ];
 
 const AUTO_HIDE_DELAY = 6000; // 6 seconds
