@@ -8,8 +8,9 @@ export default {
     theme: {
       extend: {
         fontFamily: {
+          sans: ['Inter', 'sans-serif'],
           sora: ['Sora', 'sans-serif'],
-          mono: ['JetBrains Mono', 'monospace'],
+          mono: ['Fira Code', 'monospace'],
         },
         colors: {
           emerald: {

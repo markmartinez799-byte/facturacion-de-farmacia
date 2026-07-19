@@ -64,7 +64,7 @@ export default function BackupModal({ onClose }: BackupModalProps) {
             const { data } = await supabase
               .from('productos_farmacia')
               .select('*')
-              .order('nombre')
+              .order('commercial_name')
               .range(from, from + pageSize - 1);
             if (data && data.length > 0) {
               allProducts = allProducts.concat(data);
@@ -110,21 +110,21 @@ export default function BackupModal({ onClose }: BackupModalProps) {
 
             return {
               ID: pid,
-              'Código Barras': p.codigo_barra || '',
-              'Nombre Comercial': p.nombre || '',
-              'Nombre Genérico': p.nombre_generico || '',
-              Laboratorio: p.laboratorio || '',
-              Presentación: p.presentacion || '',
-              'Precio Venta': p.precio_venta || 0,
-              'Precio Compra': p.precio_compra || '',
-              ITBIS: p.itbis_aplicable ? 'Sí' : 'No',
+              'Código Barras': p.barcode || '',
+              'Nombre Comercial': p.commercial_name || '',
+              'Nombre Genérico': p.generic_name || '',
+              Laboratorio: p.lab || '',
+              Presentación: p.presentation || '',
+              'Precio Venta': p.price || 0,
+              'Precio Compra': p.purchase_cost || '',
+              ITBIS: p.itbis_applicable ? 'Sí' : 'No',
               'Stock Total': Object.values(stock).reduce((a: number, b: number) => a + b, 0),
               ...stockCols,
               Estante: p.estante || '',
               Posición: p.posicion || '',
-              'Fecha Vencimiento': p.fecha_vencimiento || '',
+              'Fecha Vencimiento': p.expiry_date || '',
               Descripción: p.descripcion || '',
-              Activo: p.activo ? 'Sí' : 'No',
+              Activo: p.is_active ? 'Sí' : 'No',
             };
           });
 

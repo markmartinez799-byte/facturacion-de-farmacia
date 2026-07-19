@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { usePOSStore } from '@/store/posStore';
 import { useAuthStore } from '@/store/authStore';
 import { useAppStore } from '@/store/appStore';
@@ -28,38 +28,46 @@ export default function PanelPage() {
     }
   }, [currentBranch, getSalesStats, getTodaySales, getLowStockProducts, getExpiringProducts]);
 
-  // Compras alertas
-  const today = new Date();
-  const alertPurchases = supplierPurchases.filter((p) => {
-    if (p.estadoPago === 'pagado') return false;
-    if (!p.fechaLimitePago) return false;
-    const limit = new Date(p.fechaLimitePago);
-    const diffDays = Math.ceil((limit.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    return diffDays <= 5;
-  }).sort((a, b) => {
-    const da = new Date(a.fechaLimitePago!).getTime();
-    const db = new Date(b.fechaLimitePago!).getTime();
-    return da - db;
-  });
+  // Memoize heavy derived calculations
+  const alertPurchases = useMemo(() => {
+    const today = new Date();
+    return supplierPurchases.filter((p) => {
+      if (p.estadoPago === 'pagado') return false;
+      if (!p.fechaLimitePago) return false;
+      const limit = new Date(p.fechaLimitePago);
+      const diffDays = Math.ceil((limit.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      return diffDays <= 5;
+    }).sort((a, b) => {
+      const da = new Date(a.fechaLimitePago!).getTime();
+      const db = new Date(b.fechaLimitePago!).getTime();
+      return da - db;
+    });
+  }, [supplierPurchases]);
 
-  const totalProducts = products.filter((p) => p.isActive).length;
-  const totalStock = currentBranch
-    ? products.reduce((sum, p) => sum + (p.stock[currentBranch.id] || 0), 0)
-    : 0;
+  const totalProducts = useMemo(() => products.filter((p) => p.isActive).length, [products]);
 
-  const pendingPurchasesTotal = supplierPurchases
-    .filter((p) => p.estadoPago !== 'pagado')
-    .reduce((sum, p) => {
-      const abonado = (p.abonos || []).reduce((s, a) => s + a.monto, 0);
-      return sum + (p.total - abonado);
-    }, 0);
+  const totalStock = useMemo(() => {
+    if (!currentBranch) return 0;
+    return products.reduce((sum, p) => sum + (p.stock[currentBranch.id] || 0), 0);
+  }, [products, currentBranch]);
 
-  const statCards = [
+  const pendingPurchasesTotal = useMemo(() => {
+    return supplierPurchases
+      .filter((p) => p.estadoPago !== 'pagado')
+      .reduce((sum, p) => {
+        const abonado = (p.abonos || []).reduce((s, a) => s + a.monto, 0);
+        return sum + (p.total - abonado);
+      }, 0);
+  }, [supplierPurchases]);
+
+  const statCards = useMemo(() => [
     { label: 'Ventas Hoy', value: formatCurrency(stats.total), icon: DollarSign, color: 'emerald' },
     { label: 'Facturas Hoy', value: stats.count.toString(), icon: TrendingUp, color: 'sky' },
     { label: 'Ticket Promedio', value: formatCurrency(stats.average), icon: TrendingUp, color: 'violet' },
     { label: 'Cuentas por Pagar', value: formatCurrency(pendingPurchasesTotal), icon: CreditCard, color: 'rose' },
-  ];
+  ], [stats, pendingPurchasesTotal]);
+
+  const today = new Date();
 
   return (
     <div className="space-y-6 animate-fade-in">

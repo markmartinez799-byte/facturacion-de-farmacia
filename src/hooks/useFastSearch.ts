@@ -31,6 +31,7 @@ function buildIndex(products: Product[]): SearchIndex {
     tokenize(p.genericName).forEach((t) => tokens.add(t));
     tokenize(p.lab).forEach((t) => tokens.add(t));
     tokenize(p.presentation).forEach((t) => tokens.add(t));
+    if (p.code) tokenize(p.code).forEach((t) => tokens.add(t));
     if (p.estante) tokenize(p.estante).forEach((t) => tokens.add(t));
     if (p.posicion) tokenize(p.posicion).forEach((t) => tokens.add(t));
 

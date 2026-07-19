@@ -7,13 +7,16 @@ import { checkDuplicateProduct } from '@/services/supabaseService';
 import type { DuplicateCheckResult } from '@/services/supabaseService';
 import DuplicateProductModal from './DuplicateProductModal';
 import type { DuplicateAction } from './DuplicateProductModal';
+import { uploadProductImage, deleteProductImage, deleteAllProductImages, getPublicUrl, PRODUCTS_BUCKET } from '@/services/storageService';
+import { fetchProductDetails } from '@/services/supabaseService';
+import { generateId } from '@/utils/formatters';
 
 interface Props {
   product?: Product | null;
   onClose: () => void;
 }
 
-type Section = 'identificacion' | 'precios' | 'inventario' | 'lote' | 'impuestos' | 'imagen' | 'descripcion';
+type Section = 'identificacion' | 'precios' | 'inventario' | 'lote' | 'impuestos' | 'imagen' | 'descripcion' | 'ofertas';
 
 const SECCIONES: { id: Section; label: string; icon: string }[] = [
   { id: 'identificacion', label: 'Identificación', icon: 'ri-barcode-line' },
@@ -23,6 +26,7 @@ const SECCIONES: { id: Section; label: string; icon: string }[] = [
   { id: 'impuestos', label: 'Impuestos', icon: 'ri-percent-line' },
   { id: 'imagen', label: 'Imagen', icon: 'ri-image-line' },
   { id: 'descripcion', label: 'Descripción', icon: 'ri-file-text-line' },
+  { id: 'ofertas', label: 'Ofertas', icon: 'ri-price-tag-3-line' },
 ];
 
 const DEFAULT_MARGIN = 30;
@@ -41,11 +45,15 @@ export default function ProductoModal({ product, onClose }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [imageMode, setImageMode] = useState<'url' | 'file'>('url');
   const [imagePreview, setImagePreview] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [imageError, setImageError] = useState('');
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   const [form, setForm] = useState({
     barcode: '',
+    code: '',
     commercialName: '',
-    genericName: '',
     lab: '',
     presentation: '',
     purchaseCost: '',
@@ -61,6 +69,7 @@ export default function ProductoModal({ product, onClose }: Props) {
     estante: '',
     posicion: '',
     descripcion: '',
+    offer: '',
   });
 
   useEffect(() => {
@@ -70,8 +79,8 @@ export default function ProductoModal({ product, onClose }: Props) {
       const margin = purchaseCost > 0 ? Math.round(((price - purchaseCost) / purchaseCost) * 100) : DEFAULT_MARGIN;
       setForm({
         barcode: product.barcode || '',
+        code: product.code || '',
         commercialName: product.commercialName || '',
-        genericName: product.genericName || '',
         lab: product.lab || '',
         presentation: product.presentation || '',
         purchaseCost: purchaseCost.toString(),
@@ -82,13 +91,30 @@ export default function ProductoModal({ product, onClose }: Props) {
         itbisApplicable: product.itbisApplicable || false,
         stock: Object.fromEntries(branches.map((b) => [b.id, (product.stock[b.id] || 0).toString()])),
         expiryDate: product.expiryDate || '',
-        lote: '',
+        lote: product.lote || '',
         image: product.image || '',
         estante: product.estante || '',
         posicion: product.posicion || '',
         descripcion: product.descripcion || '',
+        offer: product.offer || '',
       });
       setImagePreview(product.image || '');
+
+      // Load image & descripcion on-demand if missing (bulk fetch doesn't include them)
+      if (!product.image && !product.descripcion) {
+        setLoadingDetails(true);
+        fetchProductDetails(product.id).then((details) => {
+          if (details) {
+            if (details.image) {
+              setForm((f) => ({ ...f, image: details.image! }));
+              setImagePreview(details.image);
+            }
+            if (details.descripcion) {
+              setForm((f) => ({ ...f, descripcion: details.descripcion! }));
+            }
+          }
+        }).catch(() => {}).finally(() => setLoadingDetails(false));
+      }
     } else {
       setForm((f) => ({
         ...f,
@@ -150,13 +176,12 @@ export default function ProductoModal({ product, onClose }: Props) {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const result = ev.target?.result as string;
-      setImagePreview(result);
-      setForm((f) => ({ ...f, image: result }));
-    };
-    reader.readAsDataURL(file);
+    setImageError('');
+    setSelectedFile(file);
+    // Show local preview while saving
+    const previewUrl = URL.createObjectURL(file);
+    setImagePreview(previewUrl);
+    setForm((f) => ({ ...f, image: '__pending_upload__' }));
   };
 
   const validate = (): boolean => {
@@ -171,6 +196,11 @@ export default function ProductoModal({ product, onClose }: Props) {
     if (hasFieldErrors) {
       if (e.commercialName) setActiveSection('identificacion');
       else setActiveSection('precios');
+      return false;
+    }
+    // Block save if barcode is flagged as duplicate
+    if (errors.barcode) {
+      setActiveSection('identificacion');
       return false;
     }
     return true;
@@ -188,7 +218,7 @@ export default function ProductoModal({ product, onClose }: Props) {
       if (result.isDuplicate && result.matchType === 'barcode') {
         setErrors((prev) => ({
           ...prev,
-          barcode: `⚠ Código ya registrado: "${result.existingProduct?.commercialName}"`,
+          barcode: `⚠ Producto duplicado: "${result.existingProduct?.commercialName}" (cód. ${result.existingProduct?.barcode}) — ya existe en el sistema`,
         }));
       } else {
         setErrors((prev) => { const next = { ...prev }; delete next.barcode; return next; });
@@ -201,8 +231,9 @@ export default function ProductoModal({ product, onClose }: Props) {
     branches.forEach((b) => { stockData[b.id] = parseInt(form.stock[b.id] || '0', 10); });
     return {
       barcode: form.barcode.trim(),
+      code: form.code.trim().toUpperCase() || undefined,
       commercialName: form.commercialName.trim(),
-      genericName: form.genericName.trim(),
+      genericName: '',
       lab: form.lab.trim(),
       presentation: form.presentation.trim(),
       price: parseFloat(form.price) || 0,
@@ -217,15 +248,48 @@ export default function ProductoModal({ product, onClose }: Props) {
       estante: form.estante.trim().toUpperCase() || undefined,
       posicion: form.posicion.trim().toUpperCase() || undefined,
       descripcion: form.descripcion.trim() || undefined,
+      lote: form.lote.trim().toUpperCase() || undefined,
+      offer: form.offer.trim() || undefined,
     };
   };
 
   const handleSave = async () => {
     if (!validate()) return;
-    // Skip duplicate check if editing existing product
+
+    // ── Handle image upload to storage ──
+    let finalImage = form.image;
+    const productId = product?.id || generateId();
+
+    if (selectedFile) {
+      setUploadingImage(true);
+      setImageError('');
+      // Upload compressed image via Edge Function (primary) with direct fallback
+      const uploadResult = await uploadProductImage(productId, selectedFile);
+      setUploadingImage(false);
+
+      if (uploadResult) {
+        finalImage = uploadResult.url;
+        // If we're replacing an old storage image, clean it up
+        if (product?.image && product.image.includes(PRODUCTS_BUCKET)) {
+          const oldPath = product.image.split(`${PRODUCTS_BUCKET}/`)[1];
+          if (oldPath) deleteProductImage(oldPath).catch(() => {});
+        }
+      } else {
+        // Upload failed — keep old image or show error
+        setImageError('No se pudo subir la imagen. Verifica tu conexión e intenta de nuevo.');
+        finalImage = product?.image || '';
+        setSaving(false);
+        return;
+      }
+      setSelectedFile(null);
+    } else if (form.image === '__pending_upload__') {
+      // User chose file but upload didn't happen yet (shouldn't reach here normally)
+      finalImage = product?.image || '';
+    }
+
     if (product) {
       setSaving(true);
-      await updateProduct(product.id, buildProductData());
+      await updateProduct(product.id, { ...buildProductData(), image: finalImage || undefined });
       setSaving(false);
       onClose();
       return;
@@ -237,19 +301,18 @@ export default function ProductoModal({ product, onClose }: Props) {
       barcode: form.barcode.trim(),
       commercialName: form.commercialName.trim(),
       presentation: form.presentation.trim(),
-      genericName: form.genericName.trim(),
     });
     setChecking(false);
 
     if (result.isDuplicate) {
-      setPendingProductData(buildProductData());
+      setPendingProductData({ ...buildProductData(), image: finalImage || undefined });
       setDuplicateResult(result);
       return;
     }
 
     // No duplicate — save directly
     setSaving(true);
-    await addProduct(buildProductData());
+    await addProduct({ ...buildProductData(), image: finalImage || undefined });
     setSaving(false);
     onClose();
   };
@@ -379,12 +442,39 @@ export default function ProductoModal({ product, onClose }: Props) {
                   )}
                 </div>
                 <div className="col-span-2 sm:col-span-1">
+                  <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Código de Producto (SKU)</label>
+                  <div className="relative">
+                    <i className="ri-hashtag absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                    <input
+                      type="text"
+                      value={form.code}
+                      onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase() }))}
+                      placeholder="Ej: ACET-500, VIT-C-100..."
+                      className="w-full pl-8 pr-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono uppercase"
+                    />
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">Código interno único para identificar el producto.</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2 sm:col-span-1">
                   <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Laboratorio / Fabricante</label>
                   <input
                     type="text"
                     value={form.lab}
                     onChange={(e) => setForm((f) => ({ ...f, lab: e.target.value }))}
                     placeholder="Ej: Bayer, Roche..."
+                    className="w-full p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
+                  />
+                </div>
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Presentación</label>
+                  <input
+                    type="text"
+                    value={form.presentation}
+                    onChange={(e) => setForm((f) => ({ ...f, presentation: e.target.value }))}
+                    placeholder="Ej: Caja x 10 comprimidos, Frasco 120ml..."
                     className="w-full p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
                   />
                 </div>
@@ -402,28 +492,6 @@ export default function ProductoModal({ product, onClose }: Props) {
                   className={`w-full p-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm ${errors.commercialName ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
                 />
                 {errors.commercialName && <p className="text-xs text-red-500 mt-1">{errors.commercialName}</p>}
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Nombre Genérico (DCI)</label>
-                <input
-                  type="text"
-                  value={form.genericName}
-                  onChange={(e) => setForm((f) => ({ ...f, genericName: e.target.value }))}
-                  placeholder="Ej: Paracetamol, Amoxicilina..."
-                  className="w-full p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1 block">Presentación</label>
-                <input
-                  type="text"
-                  value={form.presentation}
-                  onChange={(e) => setForm((f) => ({ ...f, presentation: e.target.value }))}
-                  placeholder="Ej: Caja x 10 comprimidos, Frasco 120ml..."
-                  className="w-full p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
-                />
               </div>
             </div>
           )}
@@ -452,7 +520,7 @@ export default function ProductoModal({ product, onClose }: Props) {
                     value={form.purchaseCost}
                     onChange={(e) => handleCostChange(e.target.value)}
                     placeholder="0.00"
-                    className={`w-full pl-10 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono ${errors.purchaseCost ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
+                    className={`w-full pl-10 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm ${errors.purchaseCost ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
                   />
                 </div>
                 {errors.purchaseCost && <p className="text-xs text-red-500 mt-1">{errors.purchaseCost}</p>}
@@ -473,7 +541,7 @@ export default function ProductoModal({ product, onClose }: Props) {
                       value={form.price}
                       onChange={(e) => handlePriceChange(e.target.value)}
                       placeholder="0.00"
-                      className={`w-full pl-10 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono ${errors.price ? 'border-red-400' : isLoss() ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
+                      className={`w-full pl-10 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm ${errors.price ? 'border-red-400' : isLoss() ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
                     />
                   </div>
                   {errors.price && <p className="text-xs text-red-500 mt-1">{errors.price}</p>}
@@ -493,7 +561,7 @@ export default function ProductoModal({ product, onClose }: Props) {
                       value={form.marginPercent}
                       onChange={(e) => handleMarginChange(e.target.value)}
                       placeholder="30"
-                      className={`w-full pl-8 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono ${marginNum < 0 ? 'border-red-300' : marginNum < 10 ? 'border-amber-300' : 'border-slate-200 dark:border-slate-700'}`}
+                      className={`w-full pl-8 pr-3 py-2.5 rounded-lg border bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm ${marginNum < 0 ? 'border-red-300' : marginNum < 10 ? 'border-amber-300' : 'border-slate-200 dark:border-slate-700'}`}
                     />
                   </div>
                   <p className="text-[11px] text-slate-400 mt-1">
@@ -547,7 +615,7 @@ export default function ProductoModal({ product, onClose }: Props) {
                     value={form.wholesalePrice}
                     onChange={(e) => setForm((f) => ({ ...f, wholesalePrice: e.target.value }))}
                     placeholder="0.00"
-                    className="w-full pl-10 pr-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm font-mono"
+                    className="w-full pl-10 pr-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
                   />
                 </div>
                 {wholesaleNum > 0 && wholesaleNum < purchaseCostNum && (
@@ -562,26 +630,26 @@ export default function ProductoModal({ product, onClose }: Props) {
                   <div className="grid grid-cols-4 gap-3">
                     <div className="text-center">
                       <p className="text-xs text-slate-400 mb-1">Costo</p>
-                      <p className="text-base font-bold font-mono text-slate-700 dark:text-slate-200">RD${purchaseCostNum.toFixed(2)}</p>
+                      <p className="text-base font-bold text-slate-700 dark:text-slate-200">RD${purchaseCostNum.toFixed(2)}</p>
                     </div>
                     <div className="text-center">
                       <p className="text-xs text-slate-400 mb-1">Venta</p>
-                      <p className="text-base font-bold font-mono text-slate-700 dark:text-slate-200">RD${priceNum.toFixed(2)}</p>
+                      <p className="text-base font-bold text-slate-700 dark:text-slate-200">RD${priceNum.toFixed(2)}</p>
                     </div>
                     <div className="text-center">
                       <p className="text-xs text-slate-400 mb-1">Margen</p>
-                      <p className={`text-base font-bold font-mono ${getMarginColor()}`}>{marginNum.toFixed(1)}%</p>
+                      <p className={`text-base font-bold ${getMarginColor()}`}>{marginNum.toFixed(1)}%</p>
                     </div>
                     <div className="text-center">
                       <p className="text-xs text-slate-400 mb-1">Precio +ITBIS</p>
-                      <p className="text-base font-bold font-mono text-amber-600">
+                      <p className="text-base font-bold text-amber-600">
                         {form.itbisApplicable ? `RD$${itbisPrice.toFixed(2)}` : '—'}
                       </p>
                     </div>
                   </div>
                   <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center">
                     <span className="text-xs text-slate-500">Ganancia por unidad:</span>
-                    <span className={`text-sm font-bold font-mono ${profitUnit < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                    <span className={`text-sm font-bold ${profitUnit < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
                       RD${profitUnit.toFixed(2)}
                     </span>
                   </div>
@@ -626,7 +694,7 @@ export default function ProductoModal({ product, onClose }: Props) {
                           if (val < 0) return;
                           setForm((f) => ({ ...f, stock: { ...f.stock, [branch.id]: e.target.value } }));
                         }}
-                        className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-white text-sm font-mono text-center"
+                        className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-white text-sm text-center"
                       />
                     </div>
                   ))}
@@ -768,17 +836,17 @@ export default function ProductoModal({ product, onClose }: Props) {
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-slate-600 dark:text-slate-400">Precio base</span>
-                      <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">RD${priceNum.toFixed(2)}</span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-200">RD${priceNum.toFixed(2)}</span>
                     </div>
                     <div className={`flex justify-between text-sm ${form.itbisApplicable ? '' : 'opacity-40'}`}>
                       <span className="text-slate-600 dark:text-slate-400">ITBIS 18%</span>
-                      <span className="font-mono font-semibold text-amber-600">
+                      <span className="font-semibold text-amber-600">
                         {form.itbisApplicable ? `+ RD${(priceNum * 0.18).toFixed(2)}` : 'No aplica'}
                       </span>
                     </div>
                     <div className="border-t border-slate-200 dark:border-slate-700 pt-2 flex justify-between">
                       <span className="font-semibold text-slate-700 dark:text-slate-200 text-sm">Precio al cliente</span>
-                      <span className="font-mono font-bold text-slate-800 dark:text-white">
+                      <span className="font-bold text-slate-800 dark:text-white">
                         RD${(form.itbisApplicable ? priceNum * 1.18 : priceNum).toFixed(2)}
                       </span>
                     </div>
@@ -821,7 +889,7 @@ export default function ProductoModal({ product, onClose }: Props) {
                 ))}
                 {imagePreview && (
                   <button
-                    onClick={() => { setImagePreview(''); setForm((f) => ({ ...f, image: '' })); }}
+                    onClick={() => { setImagePreview(''); setForm((f) => ({ ...f, image: '' })); setSelectedFile(null); setImageError(''); }}
                     className="ml-auto flex items-center gap-1 px-3 py-2 rounded-lg text-xs text-red-500 border border-red-200 hover:bg-red-50 cursor-pointer whitespace-nowrap"
                   >
                     <i className="ri-delete-bin-line text-sm"></i> Quitar imagen
@@ -830,6 +898,23 @@ export default function ProductoModal({ product, onClose }: Props) {
               </div>
 
               <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+
+              {uploadingImage && (
+                <div className="flex items-center gap-3 p-4 bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800 rounded-xl">
+                  <i className="ri-loader-4-line animate-spin text-sky-500 text-xl"></i>
+                  <div>
+                    <p className="text-sm font-medium text-sky-700 dark:text-sky-300">Subiendo imagen...</p>
+                    <p className="text-xs text-sky-500 dark:text-sky-400">Comprimiendo y guardando en la nube</p>
+                  </div>
+                </div>
+              )}
+
+              {imageError && (
+                <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl">
+                  <i className="ri-error-warning-line text-red-500"></i>
+                  <p className="text-sm text-red-600 dark:text-red-400">{imageError}</p>
+                </div>
+              )}
 
               {imageMode === 'url' && (
                 <input
@@ -841,7 +926,12 @@ export default function ProductoModal({ product, onClose }: Props) {
                 />
               )}
 
-              {imagePreview ? (
+              {loadingDetails ? (
+                <div className="flex items-center gap-3 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
+                  <i className="ri-loader-4-line animate-spin text-slate-400 text-xl"></i>
+                  <p className="text-sm text-slate-500">Cargando imagen y descripción...</p>
+                </div>
+              ) : imagePreview ? (
                 <div className="flex items-start gap-4 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
                   <div className="w-24 h-24 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden flex-shrink-0 bg-white">
                     <img src={imagePreview} alt="Vista previa" className="w-full h-full object-contain" onError={() => setImagePreview('')} />
@@ -886,6 +976,190 @@ export default function ProductoModal({ product, onClose }: Props) {
                   <p className="text-xs text-slate-400">Esta descripción se mostrará en el chat del asistente de farmacia</p>
                   <p className="text-xs text-slate-400">{form.descripcion.length}/500</p>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── SECCIÓN 8: OFERTAS ── */}
+          {activeSection === 'ofertas' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-7 h-7 flex items-center justify-center bg-rose-100 dark:bg-rose-900/30 rounded-lg">
+                  <i className="ri-price-tag-3-line text-rose-500 text-sm"></i>
+                </div>
+                <h4 className="font-semibold text-slate-700 dark:text-slate-200 text-sm">Oferta del Producto</h4>
+              </div>
+
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Configura una oferta tipo "lleve X pague Y". Cuando el cliente compre la cantidad indicada, solo pagará las unidades correspondientes.
+              </p>
+
+              {/* Grid de opciones */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Sin oferta */}
+                <div
+                  onClick={() => setForm((f) => ({ ...f, offer: '' }))}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    !form.offer
+                      ? 'border-slate-400 dark:border-slate-500 bg-slate-100 dark:bg-slate-800'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${!form.offer ? 'bg-slate-400 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
+                      <i className="ri-close-line text-lg"></i>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sin oferta</p>
+                      <p className="text-xs text-slate-400">Precio normal</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2x1 */}
+                <div
+                  onClick={() => setForm((f) => ({ ...f, offer: f.offer === '2x1' ? '' : '2x1' }))}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    form.offer === '2x1'
+                      ? 'border-rose-400 dark:border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${form.offer === '2x1' ? 'bg-rose-500 text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-500'}`}>
+                      <span className="text-xs font-black">2×1</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">2 × 1</p>
+                      <p className="text-xs text-slate-400">Lleve 2, pague 1</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3x2 */}
+                <div
+                  onClick={() => setForm((f) => ({ ...f, offer: f.offer === '3x2' ? '' : '3x2' }))}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    form.offer === '3x2'
+                      ? 'border-rose-400 dark:border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${form.offer === '3x2' ? 'bg-rose-500 text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-500'}`}>
+                      <span className="text-xs font-black">3×2</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">3 × 2</p>
+                      <p className="text-xs text-slate-400">Lleve 3, pague 2</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4x3 */}
+                <div
+                  onClick={() => setForm((f) => ({ ...f, offer: f.offer === '4x3' ? '' : '4x3' }))}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    form.offer === '4x3'
+                      ? 'border-rose-400 dark:border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${form.offer === '4x3' ? 'bg-rose-500 text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-500'}`}>
+                      <span className="text-xs font-black">4×3</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">4 × 3</p>
+                      <p className="text-xs text-slate-400">Lleve 4, pague 3</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5x4 */}
+                <div
+                  onClick={() => setForm((f) => ({ ...f, offer: f.offer === '5x4' ? '' : '5x4' }))}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    form.offer === '5x4'
+                      ? 'border-rose-400 dark:border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${form.offer === '5x4' ? 'bg-rose-500 text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-500'}`}>
+                      <span className="text-xs font-black">5×4</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">5 × 4</p>
+                      <p className="text-xs text-slate-400">Lleve 5, pague 4</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 6x5 */}
+                <div
+                  onClick={() => setForm((f) => ({ ...f, offer: f.offer === '6x5' ? '' : '6x5' }))}
+                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                    form.offer === '6x5'
+                      ? 'border-rose-400 dark:border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${form.offer === '6x5' ? 'bg-rose-500 text-white' : 'bg-rose-100 dark:bg-rose-900/30 text-rose-500'}`}>
+                      <span className="text-xs font-black">6×5</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">6 × 5</p>
+                      <p className="text-xs text-slate-400">Lleve 6, pague 5</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Preview del cálculo */}
+              {form.offer && priceNum > 0 && (
+                <div className="p-4 bg-rose-50 dark:bg-rose-900/10 border border-rose-200 dark:border-rose-800 rounded-xl">
+                  <p className="text-xs font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wide mb-3">Ejemplo de Oferta {form.offer}</p>
+                  {(() => {
+                    const [buyQty, payQty] = form.offer.split('x').map(Number);
+                    if (!buyQty || !payQty) return null;
+                    const regularTotal = buyQty * priceNum;
+                    const offerTotal = payQty * priceNum;
+                    const savings = regularTotal - offerTotal;
+                    const savingsPct = regularTotal > 0 ? Math.round((savings / regularTotal) * 100) : 0;
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">Precio normal ({buyQty} unid.)</span>
+                          <span className="font-semibold text-slate-400 line-through">RD${regularTotal.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-600 dark:text-slate-400">Precio oferta ({buyQty} unid.)</span>
+                          <span className="font-bold text-rose-600 dark:text-rose-400">RD${offerTotal.toFixed(2)}</span>
+                        </div>
+                        <div className="border-t border-rose-200 dark:border-rose-800 pt-2 flex justify-between">
+                          <span className="text-sm font-semibold text-rose-700 dark:text-rose-300">Ahorro total</span>
+                          <span className="text-sm font-bold text-rose-700 dark:text-rose-300">
+                            RD${savings.toFixed(2)} ({savingsPct}%)
+                          </span>
+                        </div>
+                        <p className="text-xs text-rose-500 mt-2">
+                          <i className="ri-information-line mr-1"></i>
+                          El cliente paga {payQty} unidad{payQty > 1 ? 'es' : ''} y se lleva {buyQty}. 
+                          El descuento se aplica automáticamente en el punto de venta al alcanzar la cantidad requerida.
+                        </p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-700">
+                <p className="text-xs text-slate-400 flex items-center gap-1">
+                  <i className="ri-lightbulb-line"></i>
+                  <strong>Tip:</strong> Las ofertas son ideales para productos próximos a vencer o con alto inventario. El sistema las aplica automáticamente al facturar.
+                </p>
               </div>
             </div>
           )}
@@ -935,11 +1209,11 @@ export default function ProductoModal({ product, onClose }: Props) {
             ) : null}
             <button
               onClick={handleSave}
-              disabled={saving || checking}
+              disabled={saving || checking || uploadingImage}
               className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 cursor-pointer whitespace-nowrap flex items-center gap-2"
             >
-              {(saving || checking) ? <i className="ri-loader-4-line animate-spin"></i> : <i className="ri-save-line"></i>}
-              {checking ? 'Verificando...' : saving ? 'Guardando...' : 'Guardar Producto'}
+              {(saving || checking || uploadingImage) ? <i className="ri-loader-4-line animate-spin"></i> : <i className="ri-save-line"></i>}
+              {uploadingImage ? 'Subiendo imagen...' : checking ? 'Verificando...' : saving ? 'Guardando...' : 'Guardar Producto'}
             </button>
           </div>
         </div>

@@ -48,7 +48,7 @@ async function ensureUsuarioInSupabase(usuarioId: string, usuarioName?: string):
       .insert({
         id: usuarioId,
         nombre: usuarioName || 'Cajero del Sistema',
-        rol: 'cashier',
+        rol: 'cajero',
         activo: true,
       });
 
@@ -138,14 +138,13 @@ export async function saveBillingToSupabase(payload: BillingPayload): Promise<Bi
     const usuarioExists = await ensureUsuarioInSupabase(validUsuarioId, payload.usuarioName);
     if (!usuarioExists) {
       console.warn('[billing] El usuario no existe en usuarios_farmacia y no pudo ser auto-creado.');
-      // Intento de fallback: usar null si la columna lo permite.
-      // Si la columna es NOT NULL, esto fallará con error de BD, pero al menos lo intentamos.
+      return { success: false, error: 'El cajero no está registrado en el sistema. Por favor pide al administrador que sincronice los usuarios en Configuración > Usuarios.' };
     }
 
     const { data: factura, error: facturaError } = await supabase
       .from('facturas_farmacia')
       .insert({
-        usuario_id: usuarioExists ? validUsuarioId : null,
+        usuario_id: validUsuarioId,
         sucursal_id: validSucursalId,
         cliente_id: validClienteId,
         tipo_ncf: payload.tipoNcf,

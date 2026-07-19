@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { usePOSStore } from '@/store/posStore';
 import { formatCurrency } from '@/utils/formatters';
 import type { Product } from '@/types';
+import BarcodeScanner from './BarcodeScanner';
 
 interface Props {
   onClose: () => void;
@@ -29,7 +30,7 @@ function MarginBadge({ cost, sale }: { cost: number; sale: number }) {
   const isLoss = m < 0;
   const isLow = m >= 0 && m < 10;
   return (
-    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-mono font-bold ${
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-bold ${
       isLoss ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' :
       isLow ? 'bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400' :
       'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
@@ -44,6 +45,8 @@ type CreditTerm = '1semana' | '1mes' | 'personalizado';
 
 export default function NuevaCompraModal({ onClose }: Props) {
   const { suppliers, products, addSupplierPurchase } = usePOSStore();
+
+  const [showScanner, setShowScanner] = useState(false);
 
   const today = new Date().toISOString().split('T')[0];
   const maxCreditDate = (() => {
@@ -72,6 +75,78 @@ export default function NuevaCompraModal({ onClose }: Props) {
   const [searchQueries, setSearchQueries] = useState<string[]>(['']);
   const [searchOpen, setSearchOpen] = useState<boolean[]>([false]);
   const searchRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  const handleScan = (barcode: string) => {
+    setShowScanner(false);
+    const trimmed = barcode.trim();
+    if (!trimmed) return;
+
+    // Find product by exact barcode match
+    const matched = products.find((p) => p.barcode?.trim() === trimmed || p.code?.trim() === trimmed);
+
+    if (matched) {
+      // Find first empty item or add new one
+      const emptyIdx = items.findIndex((i) => !i.productId && !i.productName.trim());
+      const targetIdx = emptyIdx >= 0 ? emptyIdx : items.length;
+
+      if (emptyIdx < 0) {
+        // Need to add a new row
+        setItems((prev) => [...prev, {
+          productId: '', productName: '', quantity: 1, unitCost: 0,
+          salePrice: 0, wholesalePrice: 0, lote: '', expiryDate: ''
+        }]);
+        setSearchQueries((prev) => [...prev, '']);
+        setSearchOpen((prev) => [...prev, false]);
+      }
+
+      // Fill the row after a tick so state is ready
+      setTimeout(() => {
+        setItems((prev) => {
+          const next = [...prev];
+          if (next[targetIdx]) {
+            next[targetIdx] = {
+              ...next[targetIdx],
+              productId: matched.id,
+              productName: matched.commercialName,
+              unitCost: matched.purchaseCost || 0,
+              salePrice: matched.price || 0,
+              wholesalePrice: matched.wholesalePrice || 0,
+            };
+          }
+          return next;
+        });
+        setSearchQueries((prev) => {
+          const next = [...prev];
+          next[targetIdx] = matched.commercialName;
+          return next;
+        });
+      }, 50);
+    } else {
+      // No product found — open first empty search with the barcode text
+      const emptyIdx = items.findIndex((i) => !i.productId && !i.productName.trim());
+      const targetIdx = emptyIdx >= 0 ? emptyIdx : items.length;
+
+      if (emptyIdx < 0) {
+        setItems((prev) => [...prev, {
+          productId: '', productName: '', quantity: 1, unitCost: 0,
+          salePrice: 0, wholesalePrice: 0, lote: '', expiryDate: ''
+        }]);
+        setSearchQueries((prev) => [...prev, trimmed]);
+        setSearchOpen((prev) => [...prev, true]);
+      } else {
+        setSearchQueries((prev) => {
+          const next = [...prev];
+          next[targetIdx] = trimmed;
+          return next;
+        });
+        setSearchOpen((prev) => {
+          const next = [...prev];
+          next[targetIdx] = true;
+          return next;
+        });
+      }
+    }
+  };
 
   const totals = useMemo(() => {
     const totalInversion = items.reduce((s, i) => s + i.quantity * i.unitCost, 0);
@@ -248,6 +323,7 @@ export default function NuevaCompraModal({ onClose }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+      {showScanner && <BarcodeScanner onScan={handleScan} onClose={() => setShowScanner(false)} />}
       <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-5xl max-h-[94vh] flex flex-col">
         {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
@@ -260,9 +336,17 @@ export default function NuevaCompraModal({ onClose }: Props) {
               <p className="text-xs text-slate-400">Control de costos, márgenes y lotes</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 cursor-pointer w-8 h-8 flex items-center justify-center">
-            <i className="ri-close-line text-xl"></i>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowScanner(true)}
+              className="px-3 py-2 bg-sky-50 dark:bg-sky-900/20 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800 rounded-lg text-sm hover:bg-sky-100 cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <i className="ri-camera-line"></i> Escanear
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 cursor-pointer w-8 h-8 flex items-center justify-center">
+              <i className="ri-close-line text-xl"></i>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-y-auto flex-1 p-4 space-y-5">
@@ -487,7 +571,7 @@ export default function NuevaCompraModal({ onClose }: Props) {
                         <input
                           type="number" min={1} value={item.quantity}
                           onChange={(e) => updateItem(idx, 'quantity', parseInt(e.target.value) || 1)}
-                          className="w-full p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-white text-xs text-center font-mono"
+                          className="w-full p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-white text-xs text-center"
                         />
                       </div>
 
@@ -500,7 +584,7 @@ export default function NuevaCompraModal({ onClose }: Props) {
                             type="number" min={0} step={0.01} value={item.unitCost || ''}
                             onChange={(e) => updateItem(idx, 'unitCost', parseFloat(e.target.value) || 0)}
                             placeholder="0.00"
-                            className={`w-full pl-5 pr-2 py-1.5 rounded-lg border bg-white dark:bg-slate-800 text-slate-800 dark:text-white text-xs text-center font-mono ${errors[`item_${idx}_cost`] ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
+                            className={`w-full pl-5 pr-2 py-1.5 rounded-lg border bg-white dark:bg-slate-800 text-slate-800 dark:text-white text-xs text-center ${errors[`item_${idx}_cost`] ? 'border-red-400' : 'border-slate-200 dark:border-slate-700'}`}
                           />
                         </div>
                       </div>
@@ -514,7 +598,7 @@ export default function NuevaCompraModal({ onClose }: Props) {
                             type="number" min={0} step={0.01} value={item.salePrice || ''}
                             onChange={(e) => updateItem(idx, 'salePrice', parseFloat(e.target.value) || 0)}
                             placeholder="0.00"
-                            className={`w-full pl-5 pr-2 py-1.5 rounded-lg border bg-white dark:bg-slate-800 text-xs text-center font-mono ${
+                            className={`w-full pl-5 pr-2 py-1.5 rounded-lg border bg-white dark:bg-slate-800 text-xs text-center ${
                               isLoss ? 'border-red-400 text-red-600' : 'border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white'
                             }`}
                           />
@@ -555,9 +639,9 @@ export default function NuevaCompraModal({ onClose }: Props) {
                       {/* Eliminar */}
                       <div className="col-span-2 lg:col-span-1 flex items-center justify-between lg:justify-end gap-2">
                         <div className="lg:hidden text-xs text-slate-500">
-                          Subtotal: <span className="font-mono font-bold text-slate-700 dark:text-slate-200">{formatCurrency(subtotal)}</span>
+                          Subtotal: <span className="font-bold text-slate-700 dark:text-slate-200">{formatCurrency(subtotal)}</span>
                           {ganancia !== null && (
-                            <span className={`ml-2 font-mono font-bold ${ganancia < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                            <span className={`ml-2 font-bold ${ganancia < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
                               {ganancia < 0 ? '▼' : '▲'} {formatCurrency(Math.abs(ganancia))}
                             </span>
                           )}
@@ -573,10 +657,10 @@ export default function NuevaCompraModal({ onClose }: Props) {
                     {/* Subtotal desktop */}
                     <div className="hidden lg:flex items-center justify-between mt-1.5 pt-1.5 border-t border-slate-200 dark:border-slate-700">
                       <span className="text-xs text-slate-400">
-                        Subtotal compra: <span className="font-mono font-semibold text-slate-700 dark:text-slate-200">{formatCurrency(subtotal)}</span>
+                        Subtotal compra: <span className="font-semibold text-slate-700 dark:text-slate-200">{formatCurrency(subtotal)}</span>
                       </span>
                       {ganancia !== null && (
-                        <span className={`text-xs font-mono font-semibold ${ganancia < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                        <span className={`text-xs font-semibold ${ganancia < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
                           Ganancia estimada: {ganancia < 0 ? '▼' : '▲'} {formatCurrency(Math.abs(ganancia))}
                         </span>
                       )}
@@ -614,18 +698,18 @@ export default function NuevaCompraModal({ onClose }: Props) {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-1 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
               <p className="text-xs text-slate-400 mb-1">Total Invertido</p>
-              <p className="text-xl font-bold font-mono text-slate-800 dark:text-white">{formatCurrency(totals.totalInversion)}</p>
+              <p className="text-xl font-bold text-slate-800 dark:text-white">{formatCurrency(totals.totalInversion)}</p>
             </div>
             <div className={`sm:col-span-1 p-4 rounded-xl border ${totals.gananciaEstimada < 0 ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800' : 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800'}`}>
               <p className="text-xs text-slate-400 mb-1">Ganancia Estimada</p>
-              <p className={`text-xl font-bold font-mono ${totals.gananciaEstimada < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+              <p className={`text-xl font-bold ${totals.gananciaEstimada < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                 {totals.gananciaEstimada >= 0 ? '+' : ''}{formatCurrency(totals.gananciaEstimada)}
               </p>
               <p className="text-xs text-slate-400 mt-0.5">si se vende todo al precio indicado</p>
             </div>
             <div className="sm:col-span-1 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
               <p className="text-xs text-slate-400 mb-1">Productos</p>
-              <p className="text-xl font-bold font-mono text-slate-800 dark:text-white">
+              <p className="text-xl font-bold text-slate-800 dark:text-white">
                 {items.reduce((s, i) => s + i.quantity, 0)} <span className="text-sm font-normal text-slate-400">unidades</span>
               </p>
             </div>

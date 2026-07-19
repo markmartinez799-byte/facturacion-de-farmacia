@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Package, BarChart3, Settings, CreditCard, Truck, ShoppingBag, AlertTriangle, Heart, ScanLine } from 'lucide-react';
+import { LayoutDashboard, Package, BarChart3, Settings, CreditCard, Truck, ShoppingBag, AlertTriangle, Heart, ScanLine, RotateCcw, Users, Shield } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import { usePOSStore } from '@/store/posStore';
 
@@ -13,13 +13,16 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { path: '/panel', label: 'Panel', icon: <LayoutDashboard className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
-  { path: '/pago', label: 'Cobro', icon: <CreditCard className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
-  { path: '/productos', label: 'Productos', icon: <Package className="w-5 h-5" />, roles: ['admin', 'manager'] },
+  { path: '/pago', label: 'Facturar', icon: <CreditCard className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
+  { path: '/productos', label: 'ING de Productos', icon: <Package className="w-5 h-5" />, roles: ['admin', 'manager'] },
+  { path: '/cajeros', label: 'Cajeros', icon: <Users className="w-5 h-5" />, roles: ['admin', 'manager'] },
   { path: '/proveedores', label: 'Proveedores', icon: <Truck className="w-5 h-5" />, roles: ['admin', 'manager'] },
   { path: '/compras', label: 'Compras', icon: <ShoppingBag className="w-5 h-5" />, roles: ['admin', 'manager'] },
   { path: '/vencimientos', label: 'Vencimientos', icon: <AlertTriangle className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
   { path: '/lista-interes', label: 'Lista de Interés', icon: <Heart className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
   { path: '/buscar-factura', label: 'Buscar Factura', icon: <ScanLine className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
+  { path: '/reembolsos', label: 'Reembolsos', icon: <RotateCcw className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
+  { path: '/plasticos-seguros', label: 'Plásticos Seguros', icon: <Shield className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
   { path: '/reportes', label: 'Reportes', icon: <BarChart3 className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor'] },
   { path: '/configuracion', label: 'Configuración', icon: <Settings className="w-5 h-5" />, roles: ['admin', 'manager', 'supervisor', 'cashier'] },
 ];
@@ -128,13 +131,14 @@ export function Sidebar() {
         className={`
           relative flex-shrink-0 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700
           flex flex-col transition-all duration-300 ease-in-out overflow-hidden
+          h-[calc(100vh-56px)]
           ${isOpen ? 'w-64' : 'w-0'}
         `}
         style={{ minHeight: 0 }}
       >
         {/* Inner content — always rendered but clipped by width */}
         <div className="w-64 flex flex-col h-full">
-          <nav className="flex-1 p-4 space-y-1 overflow-hidden">
+          <nav className="flex-1 p-4 space-y-1 overflow-y-auto overflow-x-hidden">
             {filteredItems.map((item) => {
               const isActive = location.pathname === item.path;
               const showBadge = item.path === '/vencimientos' && expiringCount > 0;

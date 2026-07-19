@@ -126,31 +126,28 @@ async function batchInsert(
     const chunk = rows.slice(i, i + CHUNK);
     const productRows = chunk.map((row) => ({
       id: generateId(),
-      nombre: row.commercialName || `Producto ${row._rowIndex}`,
-      nombre_generico: row.genericName || '',
-      codigo_barra: row.barcode || `AUTO-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
-      laboratorio: row.lab || '',
-      presentacion: row.presentation || '',
-      precio_venta: row.price || 0,
-      precio_compra: row.purchaseCost || null,
-      itbis: row.itbisApplicable ? 0.18 : 0,
-      itbis_aplicable: row.itbisApplicable,
-      activo: true,
-      fecha_vencimiento: row.expiryDate || null,
-      tipo: 'medicamento',
-      requiere_receta: false,
+      commercial_name: row.commercialName || `Producto ${row._rowIndex}`,
+      generic_name: row.genericName || '',
+      barcode: row.barcode || `AUTO-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+      lab: row.lab || '',
+      presentation: row.presentation || '',
+      price: row.price || 0,
+      purchase_cost: row.purchaseCost || null,
+      itbis_applicable: row.itbisApplicable,
+      is_active: true,
+      expiry_date: row.expiryDate || null,
       estante: row.estante || null,
       descripcion: row.descripcion || null,
       created_at: now(),
     }));
 
     const { data: inserted, error } = await supabase
-      .from('productos_farmacia').insert(productRows).select('id, codigo_barra');
+      .from('productos_farmacia').insert(productRows).select('id, barcode');
 
     if (error || !inserted) {
       for (let j = 0; j < chunk.length; j++) {
         const row = chunk[j];
-        const sr = { ...productRows[j], codigo_barra: `${productRows[j].codigo_barra}-${Date.now()}-${j}` };
+        const sr = { ...productRows[j], barcode: `${productRows[j].barcode}-${Date.now()}-${j}` };
         const { data: si } = await supabase.from('productos_farmacia').insert([sr]).select('id');
         if (si?.[0]) {
           const pid = si[0].id;
@@ -185,18 +182,17 @@ async function updateExisting(
   priceOnly: boolean
 ): Promise<boolean> {
   const updateData = priceOnly
-    ? { precio_venta: row.price, precio_compra: row.purchaseCost || null }
+    ? { price: row.price, purchase_cost: row.purchaseCost || null }
     : {
-        nombre: row.commercialName,
-        nombre_generico: row.genericName || '',
-        codigo_barra: row.barcode || undefined,
-        laboratorio: row.lab || '',
-        presentacion: row.presentation || '',
-        precio_venta: row.price,
-        precio_compra: row.purchaseCost || null,
-        itbis: row.itbisApplicable ? 0.18 : 0,
-        itbis_aplicable: row.itbisApplicable,
-        fecha_vencimiento: row.expiryDate || null,
+        commercial_name: row.commercialName,
+        generic_name: row.genericName || '',
+        barcode: row.barcode || undefined,
+        lab: row.lab || '',
+        presentation: row.presentation || '',
+        price: row.price,
+        purchase_cost: row.purchaseCost || null,
+        itbis_applicable: row.itbisApplicable,
+        expiry_date: row.expiryDate || null,
         estante: row.estante || null,
         descripcion: row.descripcion || null,
       };
@@ -231,6 +227,7 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
   const [importMode, setImportMode] = useState<ImportMode>('skip_duplicates');
   const [autoUpdatePrices, setAutoUpdatePrices] = useState(true);
   const [showWarningsOnly, setShowWarningsOnly] = useState(false);
+  const [previewLimit, setPreviewLimit] = useState(100);
 
   // Verify step
   const [verifyProgress, setVerifyProgress] = useState(0);
@@ -321,34 +318,46 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
     setVerifyDone(false);
     const result: ParsedRow[] = [];
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const dup = await checkDuplicateProduct({
-        barcode: row.barcode,
-        commercialName: row.commercialName,
-        presentation: row.presentation,
-        genericName: row.genericName,
-      });
+    // Parallel verification in chunks of 20 to avoid DB overload but still be fast
+    const CONCURRENCY = 20;
+    for (let i = 0; i < rows.length; i += CONCURRENCY) {
+      const chunk = rows.slice(i, i + CONCURRENCY);
+      const chunkResults = await Promise.all(
+        chunk.map(async (row) => {
+          const dup = await checkDuplicateProduct({
+            barcode: row.barcode,
+            commercialName: row.commercialName,
+            presentation: row.presentation,
+            genericName: row.genericName,
+          });
 
-      let action: ParsedRow['_action'] = 'insert';
-      let priceChanged = false;
+          let action: ParsedRow['_action'] = 'insert';
+          let priceChanged = false;
 
-      if (dup.isDuplicate) {
-        const existing = dup.existingProduct;
-        priceChanged = !!(existing && Math.abs(existing.price - row.price) > 0.001);
+          if (dup.isDuplicate) {
+            const existing = dup.existingProduct;
+            priceChanged = !!(existing && Math.abs(existing.price - row.price) > 0.001);
 
-        if (importMode === 'skip_duplicates') {
-          action = autoUpdatePrices && priceChanged ? 'price_update' : 'skip';
-        } else if (importMode === 'replace_all') {
-          action = 'update';
-        } else {
-          action = 'skip'; // will be decided in review
-        }
+            if (importMode === 'skip_duplicates') {
+              action = autoUpdatePrices && priceChanged ? 'price_update' : 'skip';
+            } else if (importMode === 'replace_all') {
+              action = 'update';
+            } else {
+              action = 'skip';
+            }
+          }
+
+          return { row, dup, action, priceChanged };
+        })
+      );
+
+      for (const { row, dup, action, priceChanged } of chunkResults) {
+        result.push({ ...row, _duplicateInfo: dup.isDuplicate ? dup : undefined, _action: action, _priceChanged: priceChanged });
       }
 
-      result.push({ ...row, _duplicateInfo: dup.isDuplicate ? dup : undefined, _action: action, _priceChanged: priceChanged });
-      setVerifyProgress(i + 1);
-      if (i % 10 === 9) await new Promise((r) => setTimeout(r, 80));
+      setVerifyProgress(Math.min(i + CONCURRENCY, rows.length));
+      // Small yield to keep UI responsive
+      await new Promise((r) => setTimeout(r, 10));
     }
 
     setVerifiedRows(result);
@@ -357,7 +366,6 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
     if (importMode !== 'review_one_by_one') {
       await doImport(result);
     }
-    // review mode waits for user decisions
   };
 
   // ── Review one-by-one ────────────────────────────────────────────────────────
@@ -407,24 +415,38 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
       errorNames.push(...res.errorNames);
     }
 
-    // 2. Full updates
-    for (const row of toUpdate) {
-      const existingId = row._duplicateInfo?.existingProduct?.id;
-      if (!existingId) { errors++; errorNames.push(row.commercialName); continue; }
-      const ok = await updateExisting(row, existingId, branchIds, selectedBranchId, false);
-      if (ok) updated++; else { errors++; errorNames.push(row.commercialName); }
+    // 2. Full updates in parallel chunks of 20
+    const updateChunkSize = 20;
+    for (let i = 0; i < toUpdate.length; i += updateChunkSize) {
+      const chunk = toUpdate.slice(i, i + updateChunkSize);
+      const chunkResults = await Promise.all(
+        chunk.map(async (row) => {
+          const existingId = row._duplicateInfo?.existingProduct?.id;
+          if (!existingId) return { ok: false, name: row.commercialName };
+          const ok = await updateExisting(row, existingId, branchIds, selectedBranchId, false);
+          return { ok, name: row.commercialName };
+        })
+      );
+      for (const { ok, name } of chunkResults) {
+        if (ok) updated++; else { errors++; if (name) errorNames.push(name); }
+      }
       setImportProgress(toInsert.length + updated + priceUpdated);
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 10));
     }
 
-    // 3. Price-only updates
-    for (const row of toPriceUpdate) {
-      const existingId = row._duplicateInfo?.existingProduct?.id;
-      if (!existingId) continue;
-      const ok = await updateExisting(row, existingId, branchIds, selectedBranchId, true);
-      if (ok) priceUpdated++;
+    // 3. Price-only updates in parallel chunks of 20
+    for (let i = 0; i < toPriceUpdate.length; i += updateChunkSize) {
+      const chunk = toPriceUpdate.slice(i, i + updateChunkSize);
+      const chunkResults = await Promise.all(
+        chunk.map(async (row) => {
+          const existingId = row._duplicateInfo?.existingProduct?.id;
+          if (!existingId) return false;
+          return updateExisting(row, existingId, branchIds, selectedBranchId, true);
+        })
+      );
+      priceUpdated += chunkResults.filter(Boolean).length;
       setImportProgress(toInsert.length + updated + priceUpdated);
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 10));
     }
 
     await loadFromSupabase();
@@ -480,7 +502,8 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
 
   // ── Derived ──────────────────────────────────────────────────────────────────
   const warningCount = rows.filter((r) => r._warnings.length > 0).length;
-  const displayRows = showWarningsOnly ? rows.filter((r) => r._warnings.length > 0) : rows;
+  const allDisplayRows = showWarningsOnly ? rows.filter((r) => r._warnings.length > 0) : rows;
+  const displayRows = allDisplayRows.slice(0, previewLimit);
   const mappedFields = Object.keys(columnMapping);
   const unmappedRequired = ['barcode', 'commercialName', 'price'].filter((f) => !mappedFields.includes(f));
   const verifyPct = rows.length > 0 ? Math.round((verifyProgress / rows.length) * 100) : 0;
@@ -766,6 +789,16 @@ export default function ExcelImportModal({ onClose }: ExcelImportModalProps) {
                   </tbody>
                 </table>
               </div>
+              {allDisplayRows.length > previewLimit && (
+                <div className="p-2 text-center border-t border-slate-200 dark:border-slate-700">
+                  <button
+                    onClick={() => setPreviewLimit((l) => l + 100)}
+                    className="text-xs text-emerald-600 dark:text-emerald-400 font-medium hover:underline cursor-pointer"
+                  >
+                    Mostrar más (+100) — {allDisplayRows.length - previewLimit} restantes
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

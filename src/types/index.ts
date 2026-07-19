@@ -6,10 +6,13 @@ export interface User {
   username?: string;
   password?: string;
   accessCode?: string;
+  email?: string;
   branchId?: string;
   isActive: boolean;
   createdAt: string;
   avatar?: string;
+  /** Identificador único de cajero, ej: CAJ-00001 */
+  codigoCajero?: string;
 }
 
 export interface Supplier {
@@ -91,6 +94,7 @@ export interface Branch {
 export interface Product {
   id: string;
   barcode: string;
+  code?: string;
   commercialName: string;
   genericName: string;
   lab: string;
@@ -109,6 +113,8 @@ export interface Product {
   estante?: string;
   posicion?: string;
   descripcion?: string;
+  lote?: string;
+  offer?: string;
 }
 
 export interface CartItem {
@@ -190,6 +196,26 @@ export interface NCFSequence {
   isActive: boolean;
 }
 
+export interface TurnoCaja {
+  id: string;
+  cajeroId: string;
+  cajeroNombre: string;
+  sucursalId?: string;
+  montoInicial: number;
+  montoFinal: number;
+  totalEfectivo: number;
+  totalTarjeta: number;
+  totalTransferencia: number;
+  totalVentas: number;
+  cantidadVentas: number;
+  diferencia: number;
+  observaciones?: string;
+  estado: 'abierto' | 'cerrado';
+  fechaApertura: string;
+  fechaCierre?: string;
+  createdAt: string;
+}
+
 export interface CompanySettings {
   name: string;
   rnc: string;
@@ -199,4 +225,94 @@ export interface CompanySettings {
   printFormat: '80mm' | 'carta';
   email: string;
   website: string;
+}
+
+export type TipoVehiculo = 'motocicleta' | 'automovil' | 'camion' | 'jeepeta' | 'otro';
+
+export type EstadoPlastico = 'pendiente' | 'entregado' | 'vencido' | 'proximo_vencer' | 'renovado';
+
+export interface PlasticoSeguro {
+  id: string;
+  numeroReferencia: string;
+  nombreCliente: string;
+  telefono?: string;
+  cedula?: string;
+  tipoVehiculo: TipoVehiculo;
+  marcaVehiculo?: string;
+  modelo?: string;
+  ano?: string;
+  placa: string;
+  aseguradora?: string;
+  numeroPoliza?: string;
+  fechaEmisionSeguro?: string;
+  fechaVencimientoSeguro?: string;
+  fechaLlegada: string;
+  loteMes?: string;
+  observaciones?: string;
+  estado: EstadoPlastico;
+  plasticoRecibido: boolean;
+  fechaRecibido?: string;
+  fechaEntrega?: string;
+  horaEntrega?: string;
+  empleadoEntrego?: string;
+  observacionesEntrega?: string;
+  renovacionDe?: string;
+  sucursalId?: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: string;
+  updatedBy?: string;
+}
+
+export interface ConsultaSeguroResultado {
+  encontrado: boolean;
+  nombreCliente?: string;
+  tipoVehiculo?: string;
+  marcaVehiculo?: string;
+  modelo?: string;
+  ano?: string;
+  placa?: string;
+  aseguradora?: string;
+  estadoSeguro?: string;
+  fechaEmisionSeguro?: string;
+  fechaVencimientoSeguro?: string;
+  diasRestantes?: number | null;
+  plasticoRecibido?: boolean;
+  fechaRecibido?: string;
+  fechaEntrega?: string;
+  horaEntrega?: string;
+  numeroReferencia?: string;
+  sucursalNombre?: string;
+  sucursalDireccion?: string;
+  sucursalTelefono?: string;
+  sucursalHorario?: string;
+  numeroPolizaParcial?: string;
+}
+
+export interface PlasticoSeguroHistorial {
+  id: string;
+  plasticoId: string;
+  accion: string;
+  usuario?: string;
+  cambios?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PlasticoSeguroFormData {
+  nombreCliente: string;
+  telefono?: string;
+  cedula?: string;
+  tipoVehiculo: TipoVehiculo;
+  marcaVehiculo?: string;
+  modelo?: string;
+  ano?: string;
+  placa: string;
+  aseguradora?: string;
+  numeroPoliza?: string;
+  fechaEmisionSeguro?: string;
+  fechaVencimientoSeguro?: string;
+  fechaLlegada: string;
+  loteMes?: string;
+  observaciones?: string;
+  sucursalId?: string;
 }

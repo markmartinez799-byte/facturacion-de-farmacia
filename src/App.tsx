@@ -8,6 +8,7 @@ import { usePOSStore } from "./store/posStore";
 import { useEffect } from "react";
 import { fetchBranches } from "./services/supabaseService";
 import { useAutoBackup } from "@/hooks/useAutoBackup";
+import { subscribeToProductChanges } from "@/services/realtimeSync";
 
 function AppContent() {
   const { isDarkMode } = useAppStore();
@@ -18,14 +19,11 @@ function AppContent() {
   useAutoBackup();
 
   // Always load fresh branches from Supabase on app start
-  // This ensures branch IDs match stock_farmacia records
   useEffect(() => {
     fetchBranches().then((remoteBranches) => {
       if (remoteBranches.length > 0) {
         useAuthStore.setState((s) => {
-          // Update branches list
           const updatedBranches = remoteBranches;
-          // If currentBranch exists, find the matching one by name to keep correct ID
           let updatedCurrentBranch = s.currentBranch;
           if (s.currentBranch) {
             const matched = remoteBranches.find(
@@ -40,12 +38,17 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    // Always reload from Supabase when authenticated to ensure fresh stock data
-    // This prevents stale localStorage cache from showing "no identificados"
     if (isAuthenticated) {
       loadFromSupabase();
     }
   }, [isAuthenticated, loadFromSupabase]);
+
+  // ── Realtime sync: keep products fresh across all clients ──
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const unsubscribe = subscribeToProductChanges();
+    return () => unsubscribe();
+  }, [isAuthenticated]);
 
   return (
     <div className={isDarkMode ? "dark" : ""}>

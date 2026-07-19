@@ -3,7 +3,7 @@ import { usePOSStore } from '@/store/posStore';
 import { formatCurrency, formatDateShort } from '@/utils/formatters';
 import type { SupplierPurchase, SupplierPurchaseItem } from '@/types';
 import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import 'jspdf-autotable';
 
 interface ConfirmDeleteProps {
   onConfirm: () => void;
@@ -191,7 +191,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
     if (purchase.invoiceNumber) doc.text(`N° Factura: ${purchase.invoiceNumber}`, 14, 49);
     doc.text(`Tipo: ${purchase.tipoPago === 'contado' ? 'Contado' : 'Crédito'}`, 14, 56);
 
-    autoTable(doc, {
+    (doc as any).autoTable({
       startY: 65,
       head: [['Producto', 'Lote', 'Cant.', 'Costo', 'P.Venta', 'Margen', 'Vence', 'Subtotal']],
       body: purchase.items.map((item) => {
@@ -351,17 +351,17 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
           <div className="grid grid-cols-3 gap-3">
             <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
               <p className="text-xs text-slate-400 mb-1">Total Invertido</p>
-              <p className="text-base font-bold font-mono text-slate-800 dark:text-white">{formatCurrency(totalInversion)}</p>
+              <p className="text-base font-bold text-slate-800 dark:text-white">{formatCurrency(totalInversion)}</p>
             </div>
             <div className={`p-3 rounded-xl border text-center ${gananciaEstimada < 0 ? 'bg-red-50 dark:bg-red-900/10 border-red-200' : 'bg-emerald-50 dark:bg-emerald-900/10 border-emerald-200'}`}>
               <p className="text-xs text-slate-400 mb-1">Ganancia Estimada</p>
-              <p className={`text-base font-bold font-mono ${gananciaEstimada < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+              <p className={`text-base font-bold ${gananciaEstimada < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                 {gananciaEstimada >= 0 ? '+' : ''}{formatCurrency(gananciaEstimada)}
               </p>
             </div>
             <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
               <p className="text-xs text-slate-400 mb-1">Margen Promedio</p>
-              <p className={`text-base font-bold font-mono ${margenPromedio === null ? 'text-slate-400' : margenPromedio < 0 ? 'text-red-600' : margenPromedio < 10 ? 'text-amber-600' : 'text-emerald-600'}`}>
+              <p className={`text-base font-bold ${margenPromedio === null ? 'text-slate-400' : margenPromedio < 0 ? 'text-red-600' : margenPromedio < 10 ? 'text-amber-600' : 'text-emerald-600'}`}>
                 {margenPromedio !== null ? `${margenPromedio.toFixed(1)}%` : '—'}
               </p>
             </div>
@@ -424,20 +424,20 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                             <span className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded text-xs font-mono">{lote}</span>
                           ) : <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>}
                         </td>
-                        <td className="p-2.5 text-center font-mono text-slate-700 dark:text-slate-300">
+                        <td className="p-2.5 text-center text-slate-700 dark:text-slate-300">
                           {isEditing ? (
                             <input
                               type="number"
                               min={1}
                               value={item.quantity}
                               onChange={(e) => updateEditItem(idx, 'quantity', parseInt(e.target.value) || 1)}
-                              className="w-16 p-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-center font-mono"
+                              className="w-16 p-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-center"
                             />
                           ) : (
                             item.quantity
                           )}
                         </td>
-                        <td className="p-2.5 text-right font-mono text-slate-700 dark:text-slate-300 text-xs">
+                        <td className="p-2.5 text-right text-slate-700 dark:text-slate-300 text-xs">
                           {isEditing ? (
                             <div className="relative">
                               <span className="absolute left-1 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">$</span>
@@ -447,14 +447,14 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                                 step={0.01}
                                 value={item.unitCost || ''}
                                 onChange={(e) => updateEditItem(idx, 'unitCost', parseFloat(e.target.value) || 0)}
-                                className="w-24 pl-3 pr-1 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-right font-mono"
+                                className="w-24 pl-3 pr-1 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-right"
                               />
                             </div>
                           ) : (
                             formatCurrency(item.unitCost)
                           )}
                         </td>
-                        <td className="p-2.5 text-right font-mono text-xs">
+                        <td className="p-2.5 text-right text-xs">
                           {isEditing ? (
                             <div className="relative">
                               <span className="absolute left-1 top-1/2 -translate-y-1/2 text-slate-400 text-[10px]">$</span>
@@ -464,7 +464,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                                 step={0.01}
                                 value={sp || ''}
                                 onChange={(e) => updateEditItem(idx, 'salePrice', parseFloat(e.target.value) || 0)}
-                                className="w-24 pl-3 pr-1 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-right font-mono"
+                                className="w-24 pl-3 pr-1 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-right"
                               />
                             </div>
                           ) : sp > 0 ? (
@@ -473,7 +473,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                         </td>
                         <td className="p-2.5 text-center">
                           {margin !== null ? (
-                            <span className={`px-1.5 py-0.5 rounded text-xs font-mono font-bold ${
+                            <span className={`px-1.5 py-0.5 rounded text-xs font-bold ${
                               isLoss ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' :
                               margin < 10 ? 'bg-amber-100 text-amber-600' :
                               'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
@@ -498,7 +498,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                             </span>
                           )}
                         </td>
-                        <td className="p-2.5 text-right font-mono font-semibold text-slate-800 dark:text-white text-xs">{formatCurrency(item.quantity * item.unitCost)}</td>
+                        <td className="p-2.5 text-right font-semibold text-slate-800 dark:text-white text-xs">{formatCurrency(item.quantity * item.unitCost)}</td>
                       </tr>
                     );
                   })}
@@ -506,7 +506,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                 <tfoot className="bg-emerald-50 dark:bg-emerald-900/20">
                   <tr>
                     <td colSpan={7} className="p-2.5 text-right font-semibold text-slate-700 dark:text-slate-300 text-sm">Total Compra</td>
-                    <td className="p-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400 font-mono">{formatCurrency(purchase.total)}</td>
+                    <td className="p-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(purchase.total)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -551,7 +551,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                   {(purchase.abonos || []).map((abono) => (
                     <div key={abono.id} className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-900 rounded-lg">
                       <div>
-                        <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400 font-mono">{formatCurrency(abono.monto)}</p>
+                        <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">{formatCurrency(abono.monto)}</p>
                         {abono.notas && <p className="text-xs text-slate-400">{abono.notas}</p>}
                       </div>
                       <span className="text-xs text-slate-400">{formatDateShort(abono.fechaAbono)}</span>
@@ -559,7 +559,7 @@ export default function DetalleCompraModal({ purchase, onClose }: Props) {
                   ))}
                   <div className="flex justify-between items-center p-2.5 bg-slate-100 dark:bg-slate-700 rounded-lg mt-2">
                     <span className="text-sm font-medium text-slate-600 dark:text-slate-300">Saldo pendiente</span>
-                    <span className={`font-bold font-mono text-sm ${saldoPendiente <= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    <span className={`font-bold text-sm ${saldoPendiente <= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                       {formatCurrency(Math.max(0, saldoPendiente))}
                     </span>
                   </div>

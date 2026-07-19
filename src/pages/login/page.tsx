@@ -35,7 +35,7 @@ function getDailyPhrase(): string {
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { users, branches, loginAdmin, loginCashier, isAuthenticated, currentUser, setOpeningAmount, updateUserAvatar } = useAuthStore();
+  const { users, branches, loginAdmin, loginCashier, isAuthenticated, currentUser, setOpeningAmount, abrirTurno, updateUserAvatar, refreshUsers, refreshBranches } = useAuthStore();
   const { isSoundEnabled } = useAppStore();
 
   const [mode, setMode] = useState<LoginMode>('role-select');
@@ -64,6 +64,12 @@ export default function LoginPage() {
       navigate(adminPath);
     }
   }, [isAuthenticated, currentUser, navigate]);
+
+  // Cargar cajeros y sucursales reales desde Supabase al montar la página
+  useEffect(() => {
+    refreshUsers();
+    refreshBranches();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (mode === 'cashier-code') setTimeout(() => codeInputRef.current?.focus(), 100);
@@ -121,13 +127,20 @@ export default function LoginPage() {
     }
   }, [username, password, loginAdmin, isSoundEnabled, navigate]);
 
-  const handleOpeningCash = useCallback(() => {
+  const handleOpeningCash = useCallback(async () => {
     const amount = parseFloat(openingCash.replace(/,/g, ''));
     if (isNaN(amount) || amount < 0) { setOpeningError('Ingresa un monto válido'); return; }
-    setOpeningAmount(amount);
-    if (isSoundEnabled) playBeep();
-    navigate('/pago');
-  }, [openingCash, setOpeningAmount, isSoundEnabled, navigate]);
+    setIsLoading(true);
+    try {
+      // Registrar turno en la base de datos
+      await abrirTurno(amount);
+      if (isSoundEnabled) playBeep();
+      navigate('/pago');
+    } catch (err: any) {
+      setOpeningError(err.message || 'Error al abrir turno');
+      setIsLoading(false);
+    }
+  }, [openingCash, abrirTurno, isSoundEnabled, navigate]);
 
   return (
     <div className="min-h-screen relative flex items-center justify-center p-4 overflow-hidden">

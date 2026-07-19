@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useAppStore } from '@/store/appStore';
 import { useAuthStore } from '@/store/authStore';
-import { Building2, Users, Store, FileText, Plus, Edit2, X, KeyRound, Eye, EyeOff, CheckCircle, AlertCircle, Printer, Rocket, Trash2, Database } from 'lucide-react';
+import { Building2, Users, Store, FileText, Plus, Edit2, X, KeyRound, Eye, EyeOff, CheckCircle, AlertCircle, Printer, Rocket, Trash2, Database, RotateCcw } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 import type { User, Branch } from '@/types';
 import PrinterConfig from './components/PrinterConfig';
 import ModoProduccion from './components/ModoProduccion';
@@ -10,8 +11,8 @@ import BackupModal from './components/BackupModal';
 
 export default function ConfiguracionPage() {
   const { settings, updateSettings, ncfSequences, updateNCFSequence } = useAppStore();
-  const { users, branches, addUser, updateUser, deleteUser, addBranch, updateBranch, deleteBranch, currentUser, changeAdminPassword, companySettings, loadCompanySettings, saveCompanySettingsDB, hasRole, availableRoles } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<'empresa' | 'cajeros' | 'sucursales' | 'ncf' | 'seguridad' | 'impresora' | 'produccion' | 'backup'>('empresa');
+  const { users, branches, addUser, updateUser, deleteUser, addBranch, updateBranch, deleteBranch, currentUser, changeAdminPassword, companySettings, loadCompanySettings, saveCompanySettingsDB, refreshUsers, hasRole, availableRoles } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<'empresa' | 'cajeros' | 'sucursales' | 'ncf' | 'seguridad' | 'impresora' | 'produccion' | 'backup' | 'reembolsos'>('empresa');
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [companyForm, setCompanyForm] = useState({
@@ -20,6 +21,7 @@ export default function ConfiguracionPage() {
 
   useEffect(() => {
     loadCompanySettings();
+    refreshUsers();
   }, []);
 
   useEffect(() => {
@@ -62,6 +64,35 @@ export default function ConfiguracionPage() {
   const [pwResult, setPwResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showCurrent, setShowCurrent] = useState(false);
   const [showNew, setShowNew] = useState(false);
+  const [savingUser, setSavingUser] = useState(false);
+  const [userError, setUserError] = useState('');
+
+  // Reembolso config state
+  const [reembolsoConfig, setReembolsoConfig] = useState({ codigo: 'FARMA-2026-ADMIN', activo: true });
+  const [reembolsoSaved, setReembolsoSaved] = useState(false);
+  const [savingReembolso, setSavingReembolso] = useState(false);
+
+  // Load reembolso config
+  useEffect(() => {
+    supabase.from('company_settings').select('codigo_reembolso, reembolsos_activos').limit(1).maybeSingle().then(({ data }) => {
+      if (data) setReembolsoConfig({ codigo: data.codigo_reembolso || 'FARMA-2026-ADMIN', activo: data.reembolsos_activos ?? true });
+    });
+  }, []);
+
+  const handleSaveReembolso = async () => {
+    setSavingReembolso(true);
+    const { data: existing } = await supabase.from('company_settings').select('id').limit(1).maybeSingle();
+    if (existing?.id) {
+      await supabase.from('company_settings').update({
+        codigo_reembolso: reembolsoConfig.codigo,
+        reembolsos_activos: reembolsoConfig.activo,
+        updated_at: new Date().toISOString(),
+      }).eq('id', existing.id);
+    }
+    setSavingReembolso(false);
+    setReembolsoSaved(true);
+    setTimeout(() => setReembolsoSaved(false), 3000);
+  };
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,14 +129,38 @@ export default function ConfiguracionPage() {
     }
   };
 
-  const handleSaveUser = () => {
-    if (editingUser) {
-      updateUser(editingUser.id, userForm);
-    } else {
-      addUser({ ...userForm, isActive: true });
+  const handleSaveUser = async () => {
+    if (!userForm.name.trim()) {
+      setUserError('El nombre es obligatorio');
+      return;
     }
-    setShowUserModal(false);
-    setUserForm({ name: '', accessCode: '', branchId: '', role: 'cashier', isActive: true });
+    if (!userForm.accessCode || userForm.accessCode.length < 4) {
+      setUserError('El código de acceso debe tener al menos 4 dígitos');
+      return;
+    }
+    setSavingUser(true);
+    setUserError('');
+    try {
+      if (editingUser) {
+        await updateUser(editingUser.id, userForm);
+        console.log('[configuracion] Usuario actualizado:', editingUser.id);
+      } else {
+        const result = await addUser({ ...userForm, isActive: true });
+        if (!result.success) {
+          setUserError(result.error || 'Error al crear usuario');
+          setSavingUser(false);
+          return;
+        }
+        console.log('[configuracion] Usuario creado exitosamente');
+      }
+      setShowUserModal(false);
+      setUserForm({ name: '', accessCode: '', branchId: '', role: 'cashier', isActive: true });
+    } catch (err) {
+      console.error('[configuracion] Error guardando usuario:', err);
+      setUserError('Error inesperado al guardar usuario');
+    } finally {
+      setSavingUser(false);
+    }
   };
 
   const handleSaveBranch = () => {
@@ -135,6 +190,7 @@ export default function ConfiguracionPage() {
     ...(hasRole('admin') ? [{ id: 'ncf', label: 'NCF', icon: FileText }] : []),
     { id: 'impresora', label: 'Impresora', icon: Printer },
     ...(hasRole('admin') || hasRole('manager') ? [{ id: 'factura', label: 'Factura', icon: FileText }] : []),
+    ...(hasRole('admin') ? [{ id: 'reembolsos' as const, label: 'Reembolsos', icon: RotateCcw }] : []),
     ...(hasRole('admin') ? [{ id: 'backup', label: 'Backup', icon: Database }] : []),
     ...(hasRole('admin') ? [{ id: 'seguridad', label: 'Seguridad', icon: KeyRound }] : []),
   ];
@@ -296,6 +352,7 @@ export default function ConfiguracionPage() {
               <thead className="bg-slate-50 dark:bg-slate-900">
                 <tr>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Nombre</th>
+                  <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Email</th>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Rol</th>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Código</th>
                   <th className="text-left p-3 text-slate-600 dark:text-slate-400 font-medium">Sucursal</th>
@@ -304,9 +361,10 @@ export default function ConfiguracionPage() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
+                {users.filter((u) => !u.id.startsWith('00000000-')).map((user) => (
                   <tr key={user.id} className="border-t border-slate-100 dark:border-slate-700">
                     <td className="p-3 text-slate-800 dark:text-slate-200 font-medium">{user.name}</td>
+                    <td className="p-3 text-slate-600 dark:text-slate-400 text-sm">{user.email || '—'}</td>
                     <td className="p-3">
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                         user.role === 'admin' ? 'bg-purple-100 text-purple-700' :
@@ -496,14 +554,98 @@ export default function ConfiguracionPage() {
         </div>
       )}
 
+      {activeTab === 'reembolsos' && hasRole('admin') && (
+        <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700 max-w-lg">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-800 dark:text-white flex items-center gap-2">
+                <RotateCcw className="w-5 h-5 text-amber-600" />
+                Configuración de Reembolsos
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">Código maestro de autorización y control de acceso</p>
+            </div>
+            <button onClick={handleSaveReembolso} disabled={savingReembolso}
+              className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 text-sm cursor-pointer whitespace-nowrap flex items-center gap-2"
+            >
+              {savingReembolso ? <i className="ri-loader-4-line animate-spin"></i> : reembolsoSaved ? <i className="ri-checkbox-circle-fill"></i> : <i className="ri-save-line"></i>}
+              {savingReembolso ? 'Guardando...' : reembolsoSaved ? 'Guardado' : 'Guardar'}
+            </button>
+          </div>
+
+          <div className="space-y-5">
+            {/* Toggle activar/desactivar */}
+            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
+              <div>
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Reembolsos Activos</p>
+                <p className="text-xs text-slate-400">Activa o desactiva la posibilidad de realizar reembolsos</p>
+              </div>
+              <button
+                onClick={() => setReembolsoConfig({ ...reembolsoConfig, activo: !reembolsoConfig.activo })}
+                className={`relative w-12 h-7 rounded-full transition-colors cursor-pointer ${
+                  reembolsoConfig.activo ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'
+                }`}
+              >
+                <span className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${
+                  reembolsoConfig.activo ? 'translate-x-5' : 'translate-x-0.5'
+                }`}></span>
+              </button>
+            </div>
+
+            {/* Código maestro */}
+            <div>
+              <label className="text-sm font-semibold text-slate-600 dark:text-slate-400 mb-2 block">
+                Código Maestro de Autorización
+              </label>
+              <p className="text-xs text-slate-400 mb-2">Este código será solicitado cada vez que se realice un reembolso</p>
+              <input
+                type="text"
+                value={reembolsoConfig.codigo}
+                onChange={(e) => setReembolsoConfig({ ...reembolsoConfig, codigo: e.target.value })}
+                className="w-full p-3 rounded-xl border-2 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-base font-mono focus:border-amber-500 outline-none transition-colors"
+                placeholder="FARMA-2026-ADMIN"
+              />
+            </div>
+
+            {/* Info */}
+            <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Importante</p>
+                  <ul className="text-xs text-amber-700 dark:text-amber-400 mt-1 space-y-1 list-disc list-inside">
+                    <li>Este código se requiere para cada reembolso</li>
+                    <li>Compártelo solo con personal autorizado</li>
+                    <li>Los intentos fallidos quedan registrados</li>
+                    <li>Los productos vencidos van a cuarentena automáticamente</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {reembolsoSaved && (
+            <div className="mt-4 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center gap-2 text-emerald-700 dark:text-emerald-400 text-sm">
+              <CheckCircle className="w-4 h-4" />
+              Configuración de reembolsos guardada correctamente.
+            </div>
+          )}
+        </div>
+      )}
+
       {showUserModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-md">
             <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
               <h3 className="font-semibold text-slate-800 dark:text-white">{editingUser ? 'Editar Usuario' : 'Nuevo Usuario'}</h3>
-              <button onClick={() => setShowUserModal(false)}><X className="w-5 h-5" /></button>
+              <button onClick={() => { setShowUserModal(false); setUserError(''); }}><X className="w-5 h-5" /></button>
             </div>
             <div className="p-4 space-y-4">
+              {userError && (
+                <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-center gap-2 text-red-700 dark:text-red-400 text-sm">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  {userError}
+                </div>
+              )}
               <div>
                 <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-1 block">Nombre Completo</label>
                 <input type="text" value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })} className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white" />
@@ -529,8 +671,10 @@ export default function ConfiguracionPage() {
               </div>
             </div>
             <div className="p-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-2">
-              <button onClick={() => setShowUserModal(false)} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg">Cancelar</button>
-              <button onClick={handleSaveUser} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Guardar</button>
+              <button onClick={() => { setShowUserModal(false); setUserError(''); }} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer">Cancelar</button>
+              <button onClick={handleSaveUser} disabled={savingUser} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 cursor-pointer flex items-center gap-2 whitespace-nowrap">
+                {savingUser ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Guardando...</> : 'Guardar'}
+              </button>
             </div>
           </div>
         </div>

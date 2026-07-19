@@ -5,8 +5,24 @@
 @layer base {
   html {
     font-size: 16px;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: normal;
+    font-feature-settings: normal;
   }
   body {
     font-size: 1rem;
+    font-family: 'Inter', sans-serif;
+    font-variant-numeric: normal;
+    font-feature-settings: normal;
+  }
+  /* Números limpios: sin cero cortado ni punteado en ninguna fuente */
+  * {
+    font-variant-numeric: normal;
+  }
+  /* Fira Code tiene cero completamente limpio por defecto, sin parches necesarios */
+  code, pre, kbd, samp,
+  [class*="font-mono"],
+  .font-mono {
+    font-variant-numeric: normal;
   }
 }

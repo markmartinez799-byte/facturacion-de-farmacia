@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { usePOSStore } from '@/store/posStore';
 import { useAuthStore } from '@/store/authStore';
 import { useAppStore } from '@/store/appStore';
@@ -8,6 +9,7 @@ import {
   Search, Plus, Minus, Trash2, ShoppingCart, Calculator,
   CreditCard, Banknote, ArrowRightLeft, Printer, X, Package,
   User, Shield, Bookmark, AlertTriangle, CheckCircle, Loader,
+  RotateCcw, ShieldCheck,
 } from 'lucide-react';
 import type { Product, PaymentMethod, NCFType } from '@/types';
 import QuickBar from './components/QuickBar';
@@ -18,10 +20,13 @@ import ExpiringModal from './components/ExpiringModal';
 import SavedTicketsModal from './components/SavedTicketsModal';
 import BuscadorStockModal from './components/BuscadorStockModal';
 import ProductPreviewModal from './components/ProductPreviewModal';
+import CheckoutModal from './components/CheckoutModal';
+import type { CheckoutTotals } from './components/CheckoutModal';
 import { saveBillingToSupabase } from '@/services/billingService';
 import { printReceipt, getTodayPrintCount, checkPrinterStatus, hasElectronBridge } from '@/services/printService';
 import BarcodeDisplay from './components/BarcodeDisplay';
-import { useFastSearch } from '@/hooks/useFastSearch';
+import { useSmartSearch } from '@/hooks/useSmartSearch';
+import SmartSearchBar from '@/components/feature/SmartSearchBar';
 
 const NCF_OPTIONS: { value: NCFType; label: string; color: string }[] = [
   { value: 'B02', label: 'B02 – Consumidor Final', color: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300' },
@@ -31,6 +36,7 @@ const NCF_OPTIONS: { value: NCFType; label: string; color: string }[] = [
 ];
 
 export default function PagoPage() {
+  const navigate = useNavigate();
   const { currentUser, currentBranch, companySettings, loadCompanySettings } = useAuthStore();
   const { isSoundEnabled, settings: appSettings, printerSettings } = useAppStore();
 
@@ -49,8 +55,14 @@ export default function PagoPage() {
     searchQuery,
     setSearchQuery,
     filteredProducts,
+    suggestions,
+    alphabet,
+    alphabetStats,
+    selectedLetter,
+    selectLetter,
+    highlightMatch,
     totalProducts,
-  } = useFastSearch(products);
+  } = useSmartSearch(products);
 
   const [showCheckout, setShowCheckout] = useState(false);
   const [showStockModal, setShowStockModal] = useState(false);
@@ -64,9 +76,6 @@ export default function PagoPage() {
   const [showDiscountPanel, setShowDiscountPanel] = useState(false);
   const [selectedProductForStock, setSelectedProductForStock] = useState<Product | null>(null);
   const [previewProduct, setPreviewProduct] = useState<Product | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo');
-  const [cashReceived, setCashReceived] = useState('');
-  const [cardAmount, setCardAmount] = useState('');
   const [localClientRnc, setLocalClientRnc] = useState(clientRnc);
   const [localClientName, setLocalClientName] = useState(clientName);
   // Billing state
@@ -75,7 +84,6 @@ export default function PagoPage() {
   const [billingError, setBillingError] = useState<string | null>(null);
 
   // Print flow states
-  const [shouldPrintThisSale, setShouldPrintThisSale] = useState(true);
   const [isPrinting, setIsPrinting] = useState(false);
   const [printStatus, setPrintStatus] = useState<'idle' | 'printing' | 'success' | 'error'>('idle');
   const [printMsg, setPrintMsg] = useState('');
@@ -119,18 +127,42 @@ export default function PagoPage() {
     }
   }, [printStatus]);
 
+  // Enter key on success modal → nueva venta
+  useEffect(() => {
+    if (!saleResult) return;
+    const handleEnterKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        setSaleResult(null);
+        setPrintStatus('idle');
+        setPrintMsg('');
+      }
+    };
+    window.addEventListener('keydown', handleEnterKey);
+    return () => window.removeEventListener('keydown', handleEnterKey);
+  }, [saleResult]);
+
   // Cargar configuración de empresa al montar
   useEffect(() => {
     loadCompanySettings();
   }, []);
 
+  // Ref to store last payment info for reprint (since payment method state moved to CheckoutModal)
+  const lastPaymentRef = useRef<{ paymentMethod: PaymentMethod; cashReceived: number; cardAmount: number; localClientRnc: string; localClientName: string }>({
+    paymentMethod: 'efectivo',
+    cashReceived: 0,
+    cardAmount: 0,
+    localClientRnc: '',
+    localClientName: '',
+  });
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const discountRef = useRef<HTMLInputElement>(null);
   const saveLabelRef = useRef<HTMLInputElement>(null);
 
-  const expiringProducts = getExpiringProducts(30);
-  const { subtotal, discountAmount, itbis, insuranceCoverage, total } = calcTotals();
-  const change = paymentMethod === 'efectivo' ? parseFloat(cashReceived || '0') - total : 0;
+  const expiringProducts = useMemo(() => getExpiringProducts(30), [getExpiringProducts]);
+  const totals: CheckoutTotals = calcTotals();
+  const { subtotal, offerDiscount, discountAmount, itbis, insuranceCoverage, total } = totals;
   const ncfOption = NCF_OPTIONS.find((o) => o.value === ncfType) || NCF_OPTIONS[0];
 
   // Keyboard shortcuts F1–F9
@@ -151,10 +183,15 @@ export default function PagoPage() {
         e.preventDefault();
         fKeys[e.key]();
       }
+      // F10: Reembolsos y Devoluciones
+      if (e.key === 'F10') {
+        e.preventDefault();
+        navigate('/reembolsos');
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cart, clearCart]);
+  }, [cart, clearCart, navigate]);
 
   const handleAddToCart = (product: Product) => {
     addToCart(product);
@@ -185,7 +222,8 @@ export default function PagoPage() {
     cartSnapshot: typeof cart,
     totalsSnapshot: ReturnType<typeof calcTotals>,
     cashReceivedNum: number,
-    changeNum: number
+    changeNum: number,
+    paymentMethod: PaymentMethod,
   ) => {
     setIsPrinting(true);
     setPrintStatus('printing');
@@ -196,6 +234,7 @@ export default function PagoPage() {
     const authSt = useAuthStore.getState();
     const ps = appSt.printerSettings;
     const comp = authSt.companySettings ?? appSt.settings;
+    const lp = lastPaymentRef.current;
 
     try {
       await printReceipt({
@@ -215,8 +254,8 @@ export default function PagoPage() {
         facturaId,
         fecha: new Date().toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' }),
         cajero: currentUser?.name || '',
-        clienteNombre: localClientName || currentClient?.name,
-        clienteRnc: localClientRnc || currentClient?.rnc,
+        clienteNombre: lp.localClientName || currentClient?.name,
+        clienteRnc: lp.localClientRnc || currentClient?.rnc,
         metodoPago: paymentMethod,
         items: cartSnapshot.map((i) => ({
           name: i.product.commercialName,
@@ -251,18 +290,33 @@ export default function PagoPage() {
     }
   };
 
-  const handleCompleteSale = async () => {
+  const handleCompleteSale = useCallback(async (params: {
+    paymentMethod: PaymentMethod;
+    cashReceived: number;
+    cardAmount: number;
+    shouldPrint: boolean;
+    localClientRnc: string;
+    localClientName: string;
+  }) => {
     if (!currentUser || !currentBranch) return;
     setIsSaving(true);
     setBillingError(null);
-    setClientInfo(localClientRnc, localClientName);
+    setClientInfo(params.localClientRnc, params.localClientName);
     setPrintStatus('idle');
+
+    // Guardar info de pago para reprint
+    lastPaymentRef.current = {
+      paymentMethod: params.paymentMethod,
+      cashReceived: params.cashReceived,
+      cardAmount: params.cardAmount,
+      localClientRnc: params.localClientRnc,
+      localClientName: params.localClientName,
+    };
 
     // Snapshot del carrito ANTES de limpiar
     const cartSnapshot = [...cart];
-    const totalsSnapshot = { subtotal, itbis, discountAmount, globalDiscount, total, insuranceCoverage };
-    const cashReceivedNum = parseFloat(cashReceived || '0');
-    const changeNum = paymentMethod === 'efectivo' ? cashReceivedNum - total : 0;
+    const totalsSnapshot: CheckoutTotals = { subtotal, offerDiscount, discountAmount, globalDiscount, total, itbis, insuranceCoverage };
+    const changeNum = params.paymentMethod === 'efectivo' ? params.cashReceived - total : 0;
     const printMode = useAppStore.getState().printerSettings.printMode;
 
     // 1. Guardar en Supabase (NCF real desde trigger)
@@ -272,7 +326,7 @@ export default function PagoPage() {
       sucursalId: currentBranch.id,
       clienteId: currentClient?.id,
       tipoNcf: ncfType,
-      metodoPago: paymentMethod,
+      metodoPago: params.paymentMethod,
       subtotal,
       itbisTotal: itbis,
       descuento: globalDiscount,
@@ -287,14 +341,12 @@ export default function PagoPage() {
     }
 
     // 2. Completar venta local (actualiza stock local y limpia carrito)
-    const sale = completeSale(paymentMethod, currentUser.id, currentUser.name, currentBranch.id);
+    const sale = completeSale(params.paymentMethod, currentUser.id, currentUser.name, currentBranch.id);
 
     if (sale && isSoundEnabled) playCashRegister();
 
     setIsSaving(false);
     setShowCheckout(false);
-    setCashReceived('');
-    setCardAmount('');
 
     const ncfFinal = billingResult.ncf || sale?.ncf || '';
     const facturaIdFinal = billingResult.facturaId || '';
@@ -309,15 +361,15 @@ export default function PagoPage() {
     });
 
     // 4. Imprimir según configuración
-    const willPrint = printMode === 'auto' || (printMode === 'ask' && shouldPrintThisSale);
+    const willPrint = printMode === 'auto' || (printMode === 'ask' && params.shouldPrint);
     if (willPrint) {
-      await processPrint(ncfFinal, facturaIdFinal, numeroFacturaFinal, cartSnapshot, totalsSnapshot, cashReceivedNum, changeNum);
+      await processPrint(ncfFinal, facturaIdFinal, numeroFacturaFinal, cartSnapshot, totalsSnapshot, params.cashReceived, changeNum, params.paymentMethod);
     } else {
       setPrintStatus('success');
       setPrintMsg('Factura registrada sin imprimir');
       showToast('Factura registrada correctamente');
     }
-  };
+  }, [currentUser, currentBranch, cart, subtotal, itbis, discountAmount, globalDiscount, total, insuranceCoverage, ncfType, currentClient, isSoundEnabled, completeSale, setClientInfo, processPrint]);
 
   const handleReprint = async () => {
     if (!saleResult) return;
@@ -326,9 +378,9 @@ export default function PagoPage() {
     const authSt = useAuthStore.getState();
     const comp = authSt.companySettings ?? appSt.settings;
     const itemsForPrint = cart.length > 0 ? cart : [];
-    const totalsSnapshot = { subtotal, itbis, discountAmount, globalDiscount, total, insuranceCoverage };
-    const cashReceivedNum = parseFloat(cashReceived || '0');
-    const changeNum = paymentMethod === 'efectivo' ? cashReceivedNum - total : 0;
+    const totalsSnapshot = { subtotal, offerDiscount, itbis, discountAmount, globalDiscount, total, insuranceCoverage };
+    const lp = lastPaymentRef.current;
+    const changeNum = lp.paymentMethod === 'efectivo' ? lp.cashReceived - saleResult.total : 0;
 
     setIsPrinting(true);
     setPrintStatus('printing');
@@ -351,9 +403,9 @@ export default function PagoPage() {
         facturaId: saleResult.facturaId,
         fecha: new Date().toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' }),
         cajero: currentUser?.name || '',
-        clienteNombre: localClientName || currentClient?.name,
-        clienteRnc: localClientRnc || currentClient?.rnc,
-        metodoPago: paymentMethod,
+        clienteNombre: lp.localClientName || currentClient?.name,
+        clienteRnc: lp.localClientRnc || currentClient?.rnc,
+        metodoPago: lp.paymentMethod,
         items: itemsForPrint.map((i) => ({
           name: i.product.commercialName,
           quantity: i.quantity,
@@ -367,7 +419,7 @@ export default function PagoPage() {
         insuranceCoverage: totalsSnapshot.insuranceCoverage,
         insuranceName: activeInsurance?.planName,
         total: saleResult.total,
-        cashReceived: cashReceivedNum > 0 ? cashReceivedNum : undefined,
+        cashReceived: lp.cashReceived > 0 ? lp.cashReceived : undefined,
         change: changeNum > 0 ? changeNum : undefined,
         printerType: ps.printerType as '58mm' | '80mm' | 'A4',
         fontSize: ps.fontSize as 'small' | 'medium' | 'large',
@@ -400,6 +452,11 @@ export default function PagoPage() {
     return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600';
   };
 
+  const getStockBadge = useCallback((product: Product) => {
+    const stock = getStockInBranch(product.id, currentBranch?.id || '');
+    return { stock, className: getStockBadgeClass(stock) };
+  }, [getStockInBranch, currentBranch]);
+
   const getDaysUntilExpiry = (dateStr: string) => {
     const diff = new Date(dateStr).getTime() - Date.now();
     return Math.ceil(diff / (1000 * 60 * 60 * 24));
@@ -418,6 +475,8 @@ export default function PagoPage() {
         onOpenExpiring={() => setShowExpiringModal(true)}
         onOpenDiscount={() => { setShowDiscountPanel(true); setTimeout(() => discountRef.current?.focus(), 100); }}
         onCheckout={() => { if (cart.length > 0) setShowCheckout(true); }}
+        onOpenReembolsos={() => navigate('/reembolsos')}
+        onOpenConsultaPlasticos={() => navigate('/consulta-seguro')}
         savedTicketsCount={savedTickets.length}
         expiringCount={expiringProducts.length}
       />
@@ -523,19 +582,23 @@ export default function PagoPage() {
 
         {/* ── LEFT PANEL: Product search & grid (scrollable) ── */}
         <div className="flex-1 flex flex-col gap-3 overflow-hidden min-h-0">
-          {/* Search bar */}
+          {/* Search bar with smart search */}
           <div className="bg-white dark:bg-slate-800 rounded-xl p-3 border border-slate-200 dark:border-slate-700 flex-shrink-0">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="F2 – Buscar producto o escanear código de barras..."
-                className="w-full pl-10 pr-4 py-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
-              />
-            </div>
+            <SmartSearchBar
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              suggestions={suggestions}
+              filteredCount={filteredProducts.length}
+              alphabet={alphabet}
+              alphabetStats={alphabetStats}
+              selectedLetter={selectedLetter}
+              onSelectLetter={selectLetter}
+              highlightMatch={highlightMatch}
+              onProductSelect={handleProductClick}
+              onProductPreview={setPreviewProduct}
+              getStockBadge={getStockBadge}
+              inputRef={searchInputRef}
+            />
           </div>
 
           {/* Expiring alert banner */}
@@ -605,12 +668,11 @@ export default function PagoPage() {
                       >
                       <div className="aspect-square rounded-lg bg-slate-100 dark:bg-slate-700 mb-2 overflow-hidden">
                         {product.image ? (
-                          <img src={product.image} alt={product.commercialName} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <Package className="w-8 h-8 text-slate-400" />
-                          </div>
-                        )}
+                          <img src={product.image} alt={product.commercialName} className="w-full h-full object-cover" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).parentElement!.querySelector('.img-fallback')!.classList.remove('hidden'); }} />
+                        ) : null}
+                        <div className={`w-full h-full flex items-center justify-center ${product.image ? 'hidden img-fallback' : ''}`}>
+                          <Package className="w-8 h-8 text-slate-400" />
+                        </div>
                       </div>
                       <p className="font-medium text-slate-800 dark:text-white text-xs line-clamp-2 leading-tight">
                         {product.commercialName}
@@ -757,6 +819,23 @@ export default function PagoPage() {
             ) : (
               cart.map((item) => {
                 const lineTotal = item.quantity * item.unitPrice * (1 - item.lineDiscount / 100);
+                // Calcular oferta
+                let offerFreeItems = 0;
+                let offerDisc = 0;
+                if (item.product.offer) {
+                  const match = item.product.offer.match(/^(\d+)x(\d+)$/);
+                  if (match) {
+                    const N = parseInt(match[1], 10);
+                    const M = parseInt(match[2], 10);
+                    if (N > M && N > 0 && item.quantity >= N) {
+                      const freePerGroup = N - M;
+                      const groups = Math.floor(item.quantity / N);
+                      offerFreeItems = groups * freePerGroup;
+                      offerDisc = offerFreeItems * item.unitPrice * (1 - item.lineDiscount / 100);
+                    }
+                  }
+                }
+                const lineAfterOffer = lineTotal - offerDisc;
                 return (
                   <div
                     key={item.product.id}
@@ -764,10 +843,27 @@ export default function PagoPage() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-slate-800 dark:text-white text-sm truncate leading-tight">
-                          {item.product.commercialName}
-                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-medium text-slate-800 dark:text-white text-sm truncate leading-tight">
+                            {item.product.commercialName}
+                          </p>
+                          {item.product.offer && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold flex-shrink-0 ${
+                              offerFreeItems > 0
+                                ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
+                                : 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                            }`}>
+                              {item.product.offer}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-slate-500">{item.product.presentation}</p>
+                        {offerFreeItems > 0 && (
+                          <p className="text-xs text-rose-500 dark:text-rose-400 mt-0.5 font-medium">
+                            <i className="ri-gift-line mr-1"></i>
+                            {offerFreeItems} gratis · Ahorras {formatCurrency(offerDisc)}
+                          </p>
+                        )}
                       </div>
                       <div className="flex items-center gap-1 flex-shrink-0">
                         <button
@@ -815,8 +911,13 @@ export default function PagoPage() {
                           <span className="text-xs text-slate-400">%</span>
                         </div>
                         <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400 text-sm">
-                          {formatCurrency(lineTotal)}
+                          {formatCurrency(lineAfterOffer)}
                         </span>
+                        {offerDisc > 0 && (
+                          <span className="text-xs text-slate-400 line-through font-mono">
+                            {formatCurrency(lineTotal)}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -867,6 +968,15 @@ export default function PagoPage() {
                 <span className="text-slate-500 dark:text-slate-400">Subtotal</span>
                 <span className="font-mono text-slate-700 dark:text-slate-300">{formatCurrency(subtotal)}</span>
               </div>
+              {offerDiscount > 0 && (
+                <div className="flex justify-between text-sm text-rose-600 dark:text-rose-400">
+                  <span className="flex items-center gap-1">
+                    <i className="ri-gift-line"></i>
+                    Oferta
+                  </span>
+                  <span className="font-mono">-{formatCurrency(offerDiscount)}</span>
+                </div>
+              )}
               {discountAmount > 0 && (
                 <div className="flex justify-between text-sm text-orange-600 dark:text-orange-400">
                   <span>Descuento ({globalDiscount}%)</span>
@@ -913,210 +1023,22 @@ export default function PagoPage() {
         </div>
       </div>
 
-      {/* ── CHECKOUT MODAL ── */}
+      {/* ── CHECKOUT MODAL (componente aislado para máximo rendimiento) ── */}
       {showCheckout && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-md animate-bounce-in max-h-[90vh] overflow-auto">
-            <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between sticky top-0 bg-white dark:bg-slate-800 z-10">
-              <h3 className="font-semibold text-slate-800 dark:text-white">Finalizar Venta</h3>
-              <button onClick={() => { setShowCheckout(false); setBillingError(null); }} className="text-slate-400 hover:text-slate-600 cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 space-y-4">
-              <div>
-                <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1 block">Tipo de Comprobante</label>
-                <select
-                  value={ncfType}
-                  onChange={(e) => setNCFType(e.target.value as NCFType)}
-                  className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
-                >
-                  {NCF_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-              </div>
-              {(ncfType === 'B01' || currentClient) && (
-                <>
-                  <div>
-                    <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1 block">RNC / Cédula Cliente</label>
-                    <input
-                      type="text"
-                      value={localClientRnc}
-                      onChange={(e) => setLocalClientRnc(e.target.value)}
-                      placeholder="001-1234567-1"
-                      className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1 block">Nombre / Razón Social</label>
-                    <input
-                      type="text"
-                      value={localClientName}
-                      onChange={(e) => setLocalClientName(e.target.value)}
-                      placeholder="Nombre del cliente"
-                      className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm"
-                    />
-                  </div>
-                </>
-              )}
-
-              <div>
-                <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1 block">Método de Pago</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { value: 'efectivo', label: 'Efectivo', icon: Banknote },
-                    { value: 'tarjeta', label: 'Tarjeta', icon: CreditCard },
-                    { value: 'mixto', label: 'Mixto', icon: ArrowRightLeft },
-                  ].map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setPaymentMethod(opt.value as PaymentMethod)}
-                      className={`p-3 rounded-lg border flex flex-col items-center gap-1 transition-colors cursor-pointer ${
-                        paymentMethod === opt.value
-                          ? 'bg-emerald-100 dark:bg-emerald-900/30 border-emerald-500 text-emerald-700 dark:text-emerald-300'
-                          : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-emerald-300'
-                      }`}
-                    >
-                      <opt.icon className="w-5 h-5" />
-                      <span className="text-xs">{opt.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {(paymentMethod === 'efectivo' || paymentMethod === 'mixto') && (
-                <div>
-                  <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1 block">Monto en Efectivo (RD$)</label>
-                  <input
-                    type="number"
-                    value={cashReceived}
-                    onChange={(e) => setCashReceived(e.target.value)}
-                    className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white font-mono text-lg"
-                    placeholder="0.00"
-                    autoFocus
-                  />
-                  {parseFloat(cashReceived || '0') > 0 && (
-                    <p className="text-sm mt-1.5">
-                      Vuelto: <span className={`font-mono font-bold ${change >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                        {formatCurrency(change)}
-                      </span>
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {(paymentMethod === 'tarjeta' || paymentMethod === 'mixto') && (
-                <div>
-                  <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1 block">Monto Tarjeta (RD$)</label>
-                  <input
-                    type="number"
-                    value={cardAmount}
-                    onChange={(e) => setCardAmount(e.target.value)}
-                    className="w-full p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white font-mono text-lg"
-                    placeholder="0.00"
-                  />
-                </div>
-              )}
-
-              {activeInsurance && (
-                <div className="p-3 bg-teal-50 dark:bg-teal-900/20 rounded-lg border border-teal-200 dark:border-teal-800">
-                  <p className="text-xs font-semibold text-teal-700 dark:text-teal-300 mb-1">
-                    Seguro: {activeInsurance.planName}
-                  </p>
-                  <p className="text-xs text-teal-600 dark:text-teal-400">
-                    Afiliado: {activeInsurance.affiliateNumber || 'No especificado'} ·
-                    Cobertura: {activeInsurance.coveragePercent}%
-                    ({formatCurrency(insuranceCoverage)})
-                  </p>
-                </div>
-              )}
-
-              {/* Error de facturación */}
-              {billingError && (
-                <div className="p-3 bg-rose-50 dark:bg-rose-900/20 rounded-lg border border-rose-200 dark:border-rose-800">
-                  <p className="text-xs font-semibold text-rose-700 dark:text-rose-300 mb-1">Error al guardar factura</p>
-                  <p className="text-xs text-rose-600 dark:text-rose-400">{billingError}</p>
-                </div>
-              )}
-
-              {/* Opción de impresión (solo en modo ask) */}
-              {(() => {
-                const mode = useAppStore.getState().printerSettings.printMode;
-                if (mode === 'ask') {
-                  return (
-                    <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
-                      <div className="flex items-center gap-2">
-                        <Printer className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                        <span className="text-sm font-medium text-amber-800 dark:text-amber-300">Imprimir factura</span>
-                      </div>
-                      <button
-                        onClick={() => setShouldPrintThisSale(!shouldPrintThisSale)}
-                        className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
-                          shouldPrintThisSale ? 'bg-emerald-500' : 'bg-slate-300'
-                        }`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                          shouldPrintThisSale ? 'translate-x-5' : 'translate-x-0'
-                        }`} />
-                      </button>
-                    </div>
-                  );
-                }
-                if (mode === 'auto') {
-                  return (
-                    <div className="flex items-center gap-2 p-2 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300">
-                      <i className="ri-flashlight-fill text-emerald-600"></i>
-                      Se imprimirá automáticamente al completar la venta
-                    </div>
-                  );
-                }
-                return (
-                  <div className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
-                    <i className="ri-forbid-line text-slate-400"></i>
-                    Modo sin impresión activado — solo se registrará en el sistema
-                  </div>
-                );
-              })()}
-
-              <div className="pt-3 border-t border-slate-200 dark:border-slate-700">
-                <div className="flex justify-between items-center mb-4">
-                  <span className="font-semibold text-slate-800 dark:text-white">Total cobrado</span>
-                  <span className="text-2xl font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                    {formatCurrency(total)}
-                  </span>
-                </div>
-                <button
-                  onClick={handleCompleteSale}
-                  disabled={
-                    isSaving ||
-                    (paymentMethod === 'efectivo' && parseFloat(cashReceived || '0') < total) ||
-                    (paymentMethod === 'mixto' &&
-                      parseFloat(cashReceived || '0') + parseFloat(cardAmount || '0') < total)
-                  }
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap"
-                >
-                  {isSaving ? (
-                    <>
-                      <Loader className="w-5 h-5 animate-spin" />
-                      Guardando factura...
-                    </>
-                  ) : (
-                    <>
-                      {(() => {
-                        const mode = useAppStore.getState().printerSettings.printMode;
-                        if (mode === 'auto') {
-                          return <><Printer className="w-5 h-5" /> Completar e Imprimir</>;
-                        }
-                        return <><CheckCircle className="w-5 h-5" /> Completar Venta</>;
-                      })()}
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <CheckoutModal
+          onClose={() => { setShowCheckout(false); setBillingError(null); }}
+          onCompleteSale={handleCompleteSale}
+          totals={totals}
+          ncfType={ncfType}
+          onNcfTypeChange={setNCFType}
+          ncfOptions={NCF_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          currentClient={currentClient}
+          activeInsurance={activeInsurance}
+          isSaving={isSaving}
+          billingError={billingError}
+          printMode={useAppStore.getState().printerSettings.printMode}
+          cartItemCount={cart.reduce((s, i) => s + i.quantity, 0)}
+        />
       )}
 
       {/* ── SALE SUCCESS MODAL — TICKET DESIGN ── */}
@@ -1204,6 +1126,15 @@ export default function PagoPage() {
                   <span>Subtotal</span>
                   <span className="font-mono">{formatCurrency(subtotal)}</span>
                 </div>
+                {offerDiscount > 0 && (
+                  <div className="flex justify-between text-rose-600 dark:text-rose-400">
+                    <span className="flex items-center gap-1">
+                      <i className="ri-gift-line"></i>
+                      Oferta
+                    </span>
+                    <span className="font-mono">-{formatCurrency(offerDiscount)}</span>
+                  </div>
+                )}
                 {discountAmount > 0 && (
                   <div className="flex justify-between text-orange-600">
                     <span>Descuento ({globalDiscount}%)</span>
@@ -1231,7 +1162,7 @@ export default function PagoPage() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500 dark:text-slate-400">Método de pago</span>
-                  <span className="font-medium text-slate-700 dark:text-slate-300 capitalize">{paymentMethod}</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-300 capitalize">{lastPaymentRef.current.paymentMethod}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500 dark:text-slate-400">Cajero</span>

@@ -190,7 +190,7 @@ function buildReceiptHTML(data: PrintReceiptData): string {
           <div style="font-weight:600;word-break:break-word;">${item.name}</div>
           <div style="color:#666;font-size:0.85em;">${item.quantity} x ${unitPriceStr}${item.lineDiscount > 0 ? ` (-${item.lineDiscount}%)` : ''}</div>
         </td>
-        <td style="padding:1px 0;text-align:right;vertical-align:top;white-space:nowrap;font-family:'Courier New',monospace;font-weight:600;">
+        <td style="padding:1px 0;text-align:right;vertical-align:top;white-space:nowrap;font-family:'Inter',sans-serif;font-weight:600;">
           ${formatCurrencyPrint(lineTotal)}
         </td>
       </tr>`;
@@ -219,7 +219,7 @@ function buildReceiptHTML(data: PrintReceiptData): string {
       <div style="background:${color}18;padding:5px 6px;margin-bottom:4px;border-radius:3px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <span style="font-weight:700;color:${color};letter-spacing:0.08em;">FACTURA</span>
-          <span style="font-family:'Courier New',monospace;font-size:0.9em;">${data.ncf}</span>
+          <span style="font-family:'Inter',sans-serif;font-size:0.9em;">${data.ncf}</span>
         </div>
         <div style="display:flex;justify-content:space-between;color:#555;font-size:0.85em;margin-top:2px;">
           <span>${data.fecha}</span>
@@ -243,25 +243,25 @@ function buildReceiptHTML(data: PrintReceiptData): string {
         <tbody>
           <tr>
             <td style="color:#666;padding:1px 0;">Subtotal</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;">${formatCurrencyPrint(data.subtotal)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;">${formatCurrencyPrint(data.subtotal)}</td>
           </tr>
           ${data.discountAmount > 0 ? `
           <tr>
             <td style="color:#d97706;padding:1px 0;">Descuento (${data.globalDiscount}%)</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;color:#d97706;">-${formatCurrencyPrint(data.discountAmount)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;color:#d97706;">-${formatCurrencyPrint(data.discountAmount)}</td>
           </tr>` : ''}
           <tr>
             <td style="color:#666;padding:1px 0;">ITBIS (18%)</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;">${formatCurrencyPrint(data.itbis)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;">${formatCurrencyPrint(data.itbis)}</td>
           </tr>
           ${(data.insuranceCoverage || 0) > 0 ? `
           <tr>
             <td style="color:#0d9488;padding:1px 0;">${data.insuranceName || 'Seguro'}</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;color:#0d9488;">-${formatCurrencyPrint(data.insuranceCoverage || 0)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;color:#0d9488;">-${formatCurrencyPrint(data.insuranceCoverage || 0)}</td>
           </tr>` : ''}
           <tr style="border-top:1px solid #ddd;">
             <td style="font-weight:900;font-size:1.2em;color:${color};padding-top:3px;">TOTAL</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;font-weight:900;font-size:1.2em;color:${color};padding-top:3px;">${formatCurrencyPrint(data.total)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;font-weight:900;font-size:1.2em;color:${color};padding-top:3px;">${formatCurrencyPrint(data.total)}</td>
           </tr>
           <tr>
             <td style="color:#666;font-size:0.85em;padding:1px 0;">Método de pago</td>
@@ -270,12 +270,12 @@ function buildReceiptHTML(data: PrintReceiptData): string {
           ${(data.cashReceived || 0) > 0 ? `
           <tr>
             <td style="color:#666;font-size:0.85em;padding:1px 0;">Efectivo recibido</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;font-size:0.85em;">${formatCurrencyPrint(data.cashReceived || 0)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;font-size:0.85em;">${formatCurrencyPrint(data.cashReceived || 0)}</td>
           </tr>` : ''}
           ${(data.change || 0) > 0 ? `
           <tr>
             <td style="color:#666;font-size:0.85em;padding:1px 0;">Vuelto</td>
-            <td style="text-align:right;font-family:'Courier New',monospace;font-size:0.85em;">${formatCurrencyPrint(data.change || 0)}</td>
+            <td style="text-align:right;font-family:'Inter',sans-serif;font-size:0.85em;">${formatCurrencyPrint(data.change || 0)}</td>
           </tr>` : ''}
         </tbody>
       </table>
@@ -287,13 +287,13 @@ function buildReceiptHTML(data: PrintReceiptData): string {
         <div style="display:inline-block;background:#fff;padding:2px 4px;">
           ${barcodeSVG}
         </div>
-        <div style="font-family:'Courier New',monospace;font-weight:900;font-size:1.1em;letter-spacing:0.15em;margin-top:2px;">${numFactura}</div>
+        <div style="font-family:'Inter',sans-serif;font-weight:900;font-size:1.1em;letter-spacing:0.15em;margin-top:2px;">${numFactura}</div>
         <div style="font-size:0.75em;color:#999;">N° Factura</div>
       </div>
 
       <div style="text-align:center;padding:3px 0;">
         <div style="font-size:0.7em;color:#999;text-transform:uppercase;letter-spacing:0.1em;">Comprobante Fiscal (DGII)</div>
-        <div style="font-family:'Courier New',monospace;font-weight:700;color:${color};letter-spacing:0.1em;">${data.ncf}</div>
+        <div style="font-family:'Inter',sans-serif;font-weight:700;color:${color};letter-spacing:0.1em;">${data.ncf}</div>
       </div>
 
       ${data.invoiceFooter ? `
@@ -323,11 +323,13 @@ function buildReceiptHTML(data: PrintReceiptData): string {
     }
     * { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body {
-      font-family: 'Courier New', Courier, monospace;
+      font-family: 'Inter', 'Sora', sans-serif;
       font-size: ${baseFontSize};
       width: ${bodyWidth};
       color: #000;
       background: #fff;
+      font-variant-numeric: normal;
+      font-feature-settings: normal;
     }
     .receipt { width: 100%; padding: 2mm 0; }
     table { width: 100%; }

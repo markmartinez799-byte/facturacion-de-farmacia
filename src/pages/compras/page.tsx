@@ -171,7 +171,7 @@ export default function ComprasPage() {
             </div>
             <div>
               <p className="text-xs text-slate-400">Total Invertido</p>
-              <p className="text-lg font-bold font-mono text-slate-700 dark:text-slate-200">{formatCurrency(stats.totalCompras)}</p>
+              <p className="text-lg font-bold text-slate-700 dark:text-slate-200">{formatCurrency(stats.totalCompras)}</p>
             </div>
           </div>
         </div>
@@ -183,7 +183,7 @@ export default function ComprasPage() {
             </div>
             <div>
               <p className="text-xs text-slate-400">Ganancia Estimada</p>
-              <p className={`text-lg font-bold font-mono ${stats.gananciaEstimada < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+              <p className={`text-lg font-bold ${stats.gananciaEstimada < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                 {stats.gananciaEstimada >= 0 ? '+' : ''}{formatCurrency(stats.gananciaEstimada)}
               </p>
             </div>
@@ -197,7 +197,7 @@ export default function ComprasPage() {
             </div>
             <div>
               <p className="text-xs text-slate-400">Por Pagar</p>
-              <p className="text-lg font-bold font-mono text-amber-600 dark:text-amber-400">{formatCurrency(stats.totalPendiente)}</p>
+              <p className="text-lg font-bold text-amber-600 dark:text-amber-400">{formatCurrency(stats.totalPendiente)}</p>
             </div>
           </div>
         </div>
@@ -209,7 +209,7 @@ export default function ComprasPage() {
             </div>
             <div>
               <p className="text-xs text-slate-400">Lotes Próx. Vencer (60d)</p>
-              <p className="text-lg font-bold font-mono text-amber-600">{stats.lotesProxVencer.length}</p>
+              <p className="text-lg font-bold text-amber-600">{stats.lotesProxVencer.length}</p>
             </div>
           </div>
         </div>
@@ -221,7 +221,7 @@ export default function ComprasPage() {
             </div>
             <div>
               <p className="text-xs text-slate-400">Facturas Vencen (5d)</p>
-              <p className="text-lg font-bold font-mono text-orange-600 dark:text-orange-400">{stats.proxVencer.length}</p>
+              <p className="text-lg font-bold text-orange-600 dark:text-orange-400">{stats.proxVencer.length}</p>
             </div>
           </div>
         </div>
@@ -233,7 +233,7 @@ export default function ComprasPage() {
             </div>
             <div>
               <p className="text-xs text-slate-400">Facturas Vencidas</p>
-              <p className="text-lg font-bold font-mono text-red-600 dark:text-red-400">{stats.vencidas.length}</p>
+              <p className="text-lg font-bold text-red-600 dark:text-red-400">{stats.vencidas.length}</p>
             </div>
           </div>
         </div>
@@ -336,9 +336,9 @@ export default function ComprasPage() {
                     </div>
                   </div>
                   <div className="text-right sm:text-right pl-12 sm:pl-0">
-                    <p className="text-base font-bold text-emerald-600 dark:text-emerald-400 font-mono">{formatCurrency(purchase.total)}</p>
+                    <p className="text-base font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(purchase.total)}</p>
                     {purchase.tipoPago === 'credito' && purchase.estadoPago !== 'pagado' && (
-                      <p className="text-xs text-red-500 font-mono">Saldo: {formatCurrency(saldo)}</p>
+                      <p className="text-xs text-red-500">Saldo: {formatCurrency(saldo)}</p>
                     )}
                     {(purchase.abonos || []).length > 0 && (
                       <p className="text-xs text-slate-400">{purchase.abonos!.length} abono(s)</p>

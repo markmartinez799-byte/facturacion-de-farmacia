@@ -1,57 +1,162 @@
 import { supabase } from '@/lib/supabase';
 import type { Product, Client, Supplier, SupplierPurchase, ReturnToSupplier, Branch, AbonoCompra, User } from '@/types';
 import { generateId, now } from '@/utils/formatters';
+import { loadProductsFromCache, saveProductsToCache } from '@/utils/productCache';
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
+
+async function withRetry<T>(fn: () => Promise<T>, label: string, maxRetries = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+        console.warn(`[${label}] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastError;
+}
 
 function productToRow(p: Omit<Product, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) {
   return {
     id: p.id,
-    nombre: p.commercialName,
-    nombre_generico: p.genericName,
-    codigo_barra: p.barcode,
-    laboratorio: p.lab,
-    presentacion: p.presentation,
-    precio_venta: p.price,
-    precio_compra: p.purchaseCost ?? null,
-    precio_mayorista: p.wholesalePrice ?? null,
-    calculo_automatico: p.autoCalcPrice ?? false,
-    itbis: p.itbisApplicable ? 0.18 : 0,
-    itbis_aplicable: p.itbisApplicable,
-    activo: p.isActive,
-    imagen_url: p.image ?? null,
-    fecha_vencimiento: p.expiryDate || null,
-    tipo: 'medicamento',
-    requiere_receta: false,
+    commercial_name: p.commercialName,
+    generic_name: p.genericName,
+    barcode: p.barcode,
+    code: p.code || '',
+    lab: p.lab,
+    presentation: p.presentation,
+    price: p.price,
+    purchase_cost: p.purchaseCost ?? null,
+    itbis_applicable: p.itbisApplicable,
+    is_active: p.isActive,
+    image: p.image ?? null,
+    expiry_date: p.expiryDate || null,
+    descripcion: p.descripcion ?? null,
     estante: p.estante ?? null,
     posicion: p.posicion ?? null,
-    descripcion: p.descripcion ?? null,
+    offer: p.offer ?? null,
   };
 }
 
-function rowToProduct(row: Record<string, unknown>, stockMap: Record<string, Record<string, number>>): Product {
+function rowToProduct(row: Record<string, unknown>, stockMap: Record<string, Record<string, number>>, loteMap: Record<string, string>): Product {
   const id = row.id as string;
   return {
     id,
-    barcode: (row.codigo_barra as string) || '',
-    commercialName: (row.nombre as string) || '',
-    genericName: (row.nombre_generico as string) || '',
-    lab: (row.laboratorio as string) || '',
-    presentation: (row.presentacion as string) || '',
-    price: Number(row.precio_venta) || 0,
-    purchaseCost: row.precio_compra != null ? Number(row.precio_compra) : undefined,
-    wholesalePrice: row.precio_mayorista != null ? Number(row.precio_mayorista) : undefined,
-    autoCalcPrice: Boolean(row.calculo_automatico),
-    itbisApplicable: Boolean(row.itbis_aplicable),
+    barcode: (row.barcode as string) || '',
+    code: (row.code as string) || '',
+    commercialName: (row.commercial_name as string) || '',
+    genericName: (row.generic_name as string) || '',
+    lab: (row.lab as string) || '',
+    presentation: (row.presentation as string) || '',
+    price: Number(row.price) || 0,
+    purchaseCost: row.purchase_cost != null ? Number(row.purchase_cost) : undefined,
+    itbisApplicable: Boolean(row.itbis_applicable),
     stock: stockMap[id] || {},
-    expiryDate: (row.fecha_vencimiento as string) || '',
-    image: (row.imagen_url as string) || undefined,
-    isActive: Boolean(row.activo),
+    expiryDate: (row.expiry_date as string) || '',
+    image: (row.image as string) || undefined,
+    isActive: Boolean(row.is_active),
     createdAt: (row.created_at as string) || now(),
     estante: (row.estante as string) || undefined,
     posicion: (row.posicion as string) || undefined,
     descripcion: (row.descripcion as string) || undefined,
+    lote: loteMap[id] || undefined,
+    offer: (row.offer as string) || undefined,
   };
+}
+
+// ─── PRODUCT DEDUPLICATION ───────────────────────────────────────────────────
+
+function calculateInfoScore(product: Product): number {
+  let score = 0;
+  if (product.barcode?.trim()) score += 1;
+  if (product.code?.trim()) score += 1;
+  if (product.genericName?.trim()) score += 1;
+  if (product.lab?.trim()) score += 1;
+  if (product.presentation?.trim()) score += 1;
+  if ((product.purchaseCost ?? 0) > 0) score += 2;
+  if (product.price > 0) score += 1;
+  if (product.image?.trim()) score += 1;
+  if (product.descripcion?.trim()) {
+    score += 1;
+    if (product.descripcion.length > 20) score += 1;
+  }
+  if (product.estante?.trim()) score += 1;
+  if (product.posicion?.trim()) score += 1;
+  if (product.expiryDate?.trim()) score += 1;
+  return score;
+}
+
+export function deduplicateProducts(products: Product[]): { keep: Product[]; duplicates: Product[] } {
+  // Group by barcode (if present) or by commercialName + presentation
+  const groups = new Map<string, Product[]>();
+
+  for (const p of products) {
+    const key = p.barcode?.trim()
+      ? `barcode:${p.barcode.trim().toLowerCase()}`
+      : `name:${(p.commercialName || '').trim().toLowerCase()}|${(p.presentation || '').trim().toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(p);
+  }
+
+  const keep: Product[] = [];
+  const duplicates: Product[] = [];
+
+  for (const [, group] of groups) {
+    if (group.length === 1) {
+      keep.push(group[0]);
+      continue;
+    }
+
+    // Sort by info score descending, then by createdAt descending
+    const sorted = [...group].sort((a, b) => {
+      const scoreA = calculateInfoScore(a);
+      const scoreB = calculateInfoScore(b);
+      if (scoreB !== scoreA) return scoreB - scoreA;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    const winner = sorted[0];
+
+    // Merge stock from duplicates into winner
+    for (const dup of sorted.slice(1)) {
+      for (const [branchId, qty] of Object.entries(dup.stock)) {
+        winner.stock[branchId] = (winner.stock[branchId] || 0) + qty;
+      }
+      duplicates.push(dup);
+    }
+
+    keep.push(winner);
+  }
+
+  return { keep, duplicates };
+}
+
+export async function mergeDuplicateStockAndDelete(keep: Product[], duplicates: Product[]): Promise<number> {
+  if (duplicates.length === 0) return 0;
+
+  // Find winners that received merged stock
+  const winnersToUpdate = keep.filter((winner) =>
+    duplicates.some((dup) =>
+      (dup.barcode?.trim() && winner.barcode?.trim() && dup.barcode.trim() === winner.barcode.trim()) ||
+      (
+        (dup.commercialName || '').trim().toLowerCase() === (winner.commercialName || '').trim().toLowerCase() &&
+        (dup.presentation || '').trim().toLowerCase() === (winner.presentation || '').trim().toLowerCase()
+      )
+    )
+  );
+
+  await Promise.all([
+    ...winnersToUpdate.map((w) => upsertProduct(w)),
+    ...duplicates.map((d) => deleteProductRemote(d.id)),
+  ]);
+
+  return duplicates.length;
 }
 
 function clientToRow(c: Omit<Client, 'id' | 'createdAt'> & { id?: string }) {
@@ -117,65 +222,157 @@ function rowToBranch(row: Record<string, unknown>): Branch {
 // ─── PRODUCTS ───────────────────────────────────────────────────────────────
 
 export async function fetchProducts(): Promise<Product[]> {
-  // Paginate to fetch ALL products (Supabase default limit is 1000)
-  let allProds: Record<string, unknown>[] = [];
-  let from = 0;
-  const pageSize = 1000;
-  let hasMore = true;
+  // ── STEP 0: Try IndexedDB cache first ────────────────────────────────
+  // We do this SYNCHRONOUSLY in the calling code (loadFromSupabase),
+  // so products appear INSTANTLY while we refresh from Supabase.
 
-  while (hasMore) {
-    const { data: prodsPage, error: prodsError } = await supabase
-      .from('productos_farmacia')
-      .select('*')
-      .order('nombre')
-      .range(from, from + pageSize - 1);
+  // ── STEP 1: Determine page counts with lightweight COUNT queries ─────
+  const [countResult, stockCountResult] = await Promise.all([
+    supabase.from('productos_farmacia').select('id', { count: 'exact', head: true }),
+    supabase.from('stock_farmacia').select('id', { count: 'exact', head: true }),
+  ]);
 
-    if (prodsError) {
-      console.error('[fetchProducts] productos_farmacia error:', prodsError.message);
-      break;
+  const totalProducts = countResult.count || 0;
+  const totalStocks = stockCountResult.count || 0;
+
+  // Use larger page sizes for fewer parallel requests
+  const PROD_PAGE_SIZE = 500;
+  const STOCK_PAGE_SIZE = 5000;
+
+  const prodPages = Math.ceil(totalProducts / PROD_PAGE_SIZE);
+  const stockPages = Math.ceil(totalStocks / STOCK_PAGE_SIZE);
+
+  // ── STEP 2: Fetch ALL pages IN PARALLEL with RETRY on failure ─────
+  const MAX_PAGE_RETRIES = 3;
+
+  async function fetchPageWithRetry(pageNum: number, pageSize: number): Promise<Record<string, unknown>[]> {
+    for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+      try {
+        const r = await withRetry(
+          () => supabase.rpc('get_products_light_page_v3', { page_size: pageSize, page_num: pageNum }),
+          `products-p${pageNum}-a${attempt}`
+        );
+        if (r.error) {
+          console.error(`[fetchProducts] products page ${pageNum} attempt ${attempt + 1} error:`, r.error.message);
+          if (attempt < MAX_PAGE_RETRIES - 1) {
+            const delay = Math.min(1500 * Math.pow(2, attempt), 8000);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          return [] as Record<string, unknown>[];
+        }
+        return (Array.isArray(r.data) ? r.data : []) as Record<string, unknown>[];
+      } catch (err: any) {
+        console.error(`[fetchProducts] products page ${pageNum} attempt ${attempt + 1} network error:`, err?.message || err);
+        if (attempt < MAX_PAGE_RETRIES - 1) {
+          const delay = Math.min(1500 * Math.pow(2, attempt), 8000);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        return [] as Record<string, unknown>[];
+      }
     }
-
-    if (prodsPage && prodsPage.length > 0) {
-      allProds = allProds.concat(prodsPage);
-    }
-
-    if (!prodsPage || prodsPage.length < pageSize) {
-      hasMore = false;
-    } else {
-      from += pageSize;
-    }
+    return [] as Record<string, unknown>[];
   }
 
-  // Paginate stock too
-  let allStocks: Record<string, unknown>[] = [];
-  let stockFrom = 0;
-  let hasMoreStock = true;
-
-  while (hasMoreStock) {
-    const { data: stocksPage, error: stocksError } = await supabase
-      .from('stock_farmacia')
-      .select('producto_id, sucursal_id, cantidad')
-      .range(stockFrom, stockFrom + pageSize - 1);
-
-    if (stocksError) {
-      console.error('[fetchProducts] stock_farmacia error:', stocksError.message);
-      break;
+  async function fetchStockPageWithRetry(pageNum: number, pageSize: number): Promise<Record<string, unknown>[]> {
+    for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+      try {
+        const r = await withRetry(
+          () => supabase.rpc('get_stocks_json_page', { page_size: pageSize, page_num: pageNum }),
+          `stocks-p${pageNum}-a${attempt}`
+        );
+        if (r.error) {
+          console.error(`[fetchProducts] stocks page ${pageNum} attempt ${attempt + 1} error:`, r.error.message);
+          if (attempt < MAX_PAGE_RETRIES - 1) {
+            const delay = Math.min(1500 * Math.pow(2, attempt), 8000);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          return [] as Record<string, unknown>[];
+        }
+        return (Array.isArray(r.data) ? r.data : []) as Record<string, unknown>[];
+      } catch (err: any) {
+        console.error(`[fetchProducts] stocks page ${pageNum} attempt ${attempt + 1} network error:`, err?.message || err);
+        if (attempt < MAX_PAGE_RETRIES - 1) {
+          const delay = Math.min(1500 * Math.pow(2, attempt), 8000);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        return [] as Record<string, unknown>[];
+      }
     }
-
-    if (stocksPage && stocksPage.length > 0) {
-      allStocks = allStocks.concat(stocksPage);
-    }
-
-    if (!stocksPage || stocksPage.length < pageSize) {
-      hasMoreStock = false;
-    } else {
-      stockFrom += pageSize;
-    }
+    return [] as Record<string, unknown>[];
   }
 
-  // Build stockMap: { productId: { branchId: quantity } }
+  const [allProds, allStocks, allLotes] = await Promise.all([
+    // Products: fetch all pages in parallel with retry
+    (async () => {
+      if (prodPages === 0) return [] as Record<string, unknown>[];
+      const pagePromises = Array.from({ length: prodPages }, (_, i) =>
+        fetchPageWithRetry(i, PROD_PAGE_SIZE)
+      );
+      const pages = await Promise.all(pagePromises);
+      const flat = pages.flat();
+      if (flat.length < totalProducts) {
+        console.warn(`[fetchProducts] ⚠️ Only got ${flat.length}/${totalProducts} products — some pages may have failed`);
+      }
+      return flat;
+    })(),
+
+    // Stocks: fetch all pages in parallel with retry
+    (async () => {
+      if (stockPages === 0) return [] as Record<string, unknown>[];
+      const pagePromises = Array.from({ length: stockPages }, (_, i) =>
+        fetchStockPageWithRetry(i, STOCK_PAGE_SIZE)
+      );
+      const pages = await Promise.all(pagePromises);
+      const flat = pages.flat();
+      if (flat.length < totalStocks) {
+        console.warn(`[fetchProducts] ⚠️ Only got ${flat.length}/${totalStocks} stocks — some pages may have failed`);
+      }
+      return flat;
+    })(),
+
+    // Lotes: single call
+    (async () => {
+      try {
+        const result = await withRetry(
+          () => supabase.rpc('get_all_lotes_json'),
+          'fetchProducts:lotes'
+        );
+        if (result.error) {
+          console.error('[fetchProducts] lotes error:', result.error.message);
+          return [] as Record<string, unknown>[];
+        }
+        return (Array.isArray(result.data) ? result.data : []) as Record<string, unknown>[];
+      } catch (err: any) {
+        console.error('[fetchProducts] lotes network error:', err?.message || err);
+        return [] as Record<string, unknown>[];
+      }
+    })(),
+  ]);
+
+  // ── STEP 3: Save to IndexedDB cache for next time ───────────────────
+  if (allProds.length > 0) {
+    saveProductsToCache(allProds, allStocks, allLotes).catch(() => {});
+  }
+
+  // ── STEP 4: Build maps and return products ──────────────────────────
+  const loteMap: Record<string, string> = {};
+  allLotes.forEach((l: Record<string, unknown>) => {
+    const pid = l.producto_id as string;
+    const numero = (l.numero_lote as string) || '';
+    if (!pid || !numero) return;
+    if (!loteMap[pid]) {
+      loteMap[pid] = numero;
+    } else if (!loteMap[pid].includes(numero)) {
+      loteMap[pid] += `, ${numero}`;
+    }
+  });
+
   const stockMap: Record<string, Record<string, number>> = {};
-  (allStocks || []).forEach((s: Record<string, unknown>) => {
+  allStocks.forEach((s: Record<string, unknown>) => {
     const pid = s.producto_id as string;
     const bid = s.sucursal_id as string;
     if (!pid || !bid) return;
@@ -183,12 +380,87 @@ export async function fetchProducts(): Promise<Product[]> {
     stockMap[pid][bid] = Number(s.cantidad) || 0;
   });
 
-  return allProds.map((r: Record<string, unknown>) => rowToProduct(r, stockMap));
+  return allProds.map((r: Record<string, unknown>) => rowToProduct(r, stockMap, loteMap));
+}
+
+// ─── LOAD CACHED PRODUCTS (instant, non-blocking) ───────────────────────────
+
+export async function loadCachedProducts(): Promise<Product[] | null> {
+  try {
+    const cached = await loadProductsFromCache();
+    if (!cached || cached.products.length === 0) return null;
+
+    const { products: cachedProds, stocks: cachedStocks, lotes: cachedLotes } = cached;
+
+    const loteMap: Record<string, string> = {};
+    cachedLotes.forEach((l: Record<string, unknown>) => {
+      const pid = l.producto_id as string;
+      const numero = (l.numero_lote as string) || '';
+      if (!pid || !numero) return;
+      if (!loteMap[pid]) {
+        loteMap[pid] = numero;
+      } else if (!loteMap[pid].includes(numero)) {
+        loteMap[pid] += `, ${numero}`;
+      }
+    });
+
+    const stockMap: Record<string, Record<string, number>> = {};
+    cachedStocks.forEach((s: Record<string, unknown>) => {
+      const pid = s.producto_id as string;
+      const bid = s.sucursal_id as string;
+      if (!pid || !bid) return;
+      if (!stockMap[pid]) stockMap[pid] = {};
+      stockMap[pid][bid] = Number(s.cantidad) || 0;
+    });
+
+    return cachedProds.map((r: Record<string, unknown>) => rowToProduct(r, stockMap, loteMap));
+  } catch (err) {
+    console.warn('[loadCachedProducts] failed:', err);
+    return null;
+  }
+}
+
+// ─── ON-DEMAND PRODUCT DETAILS (image + description) ────────────────────────
+
+export async function fetchProductDetails(productId: string): Promise<{ image?: string; descripcion?: string } | null> {
+  try {
+    const { data, error } = await supabase.rpc('get_product_details', { p_product_id: productId });
+    if (error || !data) return null;
+    const d = data as Record<string, unknown>;
+    return {
+      image: (d.image as string) || undefined,
+      descripcion: (d.descripcion as string) || undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function upsertProduct(product: Product): Promise<void> {
   const row = productToRow(product);
   await supabase.from('productos_farmacia').upsert(row, { onConflict: 'id' });
+
+  // Save lot number to lotes table if provided
+  if (product.lote?.trim()) {
+    // First check if a lot already exists for this product
+    const { data: existingLote } = await supabase
+      .from('lotes')
+      .select('id')
+      .eq('producto_id', product.id)
+      .eq('numero_lote', product.lote.trim())
+      .maybeSingle();
+
+    if (!existingLote) {
+      await supabase.from('lotes').insert({
+        producto_id: product.id,
+        numero_lote: product.lote.trim(),
+        fecha_vencimiento: product.expiryDate || null,
+        stock: 0,
+        costo: product.purchaseCost ?? 0,
+        activo: true,
+      });
+    }
+  }
 
   // Upsert stock per branch in stock_farmacia
   const stockEntries = Object.entries(product.stock);
@@ -596,18 +868,61 @@ export async function fetchSalesRemote(): Promise<import('@/types').Sale[]> {
 // ─── USERS ──────────────────────────────────────────────────────────────────
 
 export async function fetchUsers(): Promise<import('@/types').User[]> {
-  const { data } = await supabase.from('usuarios_farmacia').select('*').eq('activo', true).order('nombre');
-  return (data || []).map((r: Record<string, unknown>) => ({
+  // Fetch ALL users (not just active) for management view
+  let allUsers: Record<string, unknown>[] = [];
+  let from = 0;
+  const pageSize = 1000;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data } = await supabase
+      .from('usuarios_farmacia')
+      .select('*')
+      .order('nombre')
+      .range(from, from + pageSize - 1);
+
+    if (data && data.length > 0) {
+      allUsers = allUsers.concat(data);
+    }
+
+    if (!data || data.length < pageSize) {
+      hasMore = false;
+    } else {
+      from += pageSize;
+    }
+  }
+
+  // ── FALLBACK: si no hay usuarios (probablemente RLS bloquea sin sesión), usar edge function ──
+  if (allUsers.length === 0) {
+    console.log('[fetchUsers] Query directa retornó 0 usuarios, intentando edge function list-users...');
+    try {
+      const { data: efResult, error: efError } = await supabase.functions.invoke('auth-admin', {
+        body: { action: 'list-users' },
+      });
+      if (efError) {
+        console.warn('[fetchUsers] Edge function error:', efError.message);
+      } else if (efResult?.success && Array.isArray(efResult.users)) {
+        allUsers = efResult.users;
+        console.log('[fetchUsers] Edge function retornó', allUsers.length, 'usuarios');
+      }
+    } catch (e: any) {
+      console.warn('[fetchUsers] Edge function exception:', e?.message);
+    }
+  }
+
+  return allUsers.map((r: Record<string, unknown>) => ({
     id: r.id as string,
     name: (r.nombre as string) || '',
     role: sanitizeRole(r.rol),
     username: (r.username as string) || undefined,
     password: (r.password_hash as string) || undefined,
     accessCode: (r.codigo_acceso as string) || undefined,
+    email: (r.email as string) || undefined,
     branchId: (r.sucursal_id as string) || undefined,
     isActive: Boolean(r.activo),
     avatar: (r.avatar_url as string) || undefined,
     createdAt: (r.created_at as string) || now(),
+    codigoCajero: (r.codigo_cajero as string) || undefined,
   }));
 }
 
@@ -624,6 +939,7 @@ export async function upsertUser(user: import('@/types').User): Promise<void> {
     sucursal_id: user.branchId || null,
     activo: user.isActive,
     avatar_url: user.avatar || null,
+    codigo_cajero: user.codigoCajero || null,
   }, { onConflict: 'id' });
 }
 
@@ -847,8 +1163,8 @@ export async function checkDuplicateProduct(params: {
     let query = supabase
       .from('productos_farmacia')
       .select('*')
-      .ilike('codigo_barra', barcode.trim())
-      .eq('activo', true);
+      .ilike('barcode', barcode.trim())
+      .eq('is_active', true);
     if (excludeId) query = query.neq('id', excludeId);
     const { data } = await query.limit(1).maybeSingle();
     if (data) {
@@ -858,7 +1174,7 @@ export async function checkDuplicateProduct(params: {
       return {
         isDuplicate: true,
         matchType: 'barcode',
-        existingProduct: rowToProduct(data as Record<string, unknown>, { [(data as Record<string, unknown>).id as string]: stockMap }),
+        existingProduct: rowToProduct(data as Record<string, unknown>, { [(data as Record<string, unknown>).id as string]: stockMap }, {}),
       };
     }
   }
@@ -868,9 +1184,9 @@ export async function checkDuplicateProduct(params: {
     let query = supabase
       .from('productos_farmacia')
       .select('*')
-      .ilike('nombre', commercialName.trim())
-      .eq('activo', true);
-    if (presentation && presentation.trim()) query = query.ilike('presentacion', presentation.trim());
+      .ilike('commercial_name', commercialName.trim())
+      .eq('is_active', true);
+    if (presentation && presentation.trim()) query = query.ilike('presentation', presentation.trim());
     if (excludeId) query = query.neq('id', excludeId);
     const { data } = await query.limit(1).maybeSingle();
     if (data) {
@@ -880,7 +1196,7 @@ export async function checkDuplicateProduct(params: {
       return {
         isDuplicate: true,
         matchType: 'commercial_name',
-        existingProduct: rowToProduct(data as Record<string, unknown>, { [(data as Record<string, unknown>).id as string]: stockMap }),
+        existingProduct: rowToProduct(data as Record<string, unknown>, { [(data as Record<string, unknown>).id as string]: stockMap }, {}),
       };
     }
   }
@@ -890,8 +1206,8 @@ export async function checkDuplicateProduct(params: {
     let query = supabase
       .from('productos_farmacia')
       .select('*')
-      .ilike('nombre_generico', genericName.trim())
-      .eq('activo', true);
+      .ilike('generic_name', genericName.trim())
+      .eq('is_active', true);
     if (excludeId) query = query.neq('id', excludeId);
     const { data } = await query.limit(1).maybeSingle();
     if (data) {
@@ -901,7 +1217,7 @@ export async function checkDuplicateProduct(params: {
       return {
         isDuplicate: true,
         matchType: 'generic_name',
-        existingProduct: rowToProduct(data as Record<string, unknown>, { [(data as Record<string, unknown>).id as string]: stockMap }),
+        existingProduct: rowToProduct(data as Record<string, unknown>, { [(data as Record<string, unknown>).id as string]: stockMap }, {}),
       };
     }
   }
@@ -912,7 +1228,7 @@ export async function checkDuplicateProduct(params: {
 // ─── LOAD ALL DATA ───────────────────────────────────────────────────────────
 
 export async function loadAllData() {
-  const [products, clients, suppliers, supplierPurchases, returnsToSupplier, branches, sales, users] = await Promise.all([
+  const [productsRes, clientsRes, suppliersRes, purchasesRes, returnsRes, branchesRes, salesRes, usersRes] = await Promise.allSettled([
     fetchProducts(),
     fetchClients(),
     fetchSuppliers(),
@@ -922,7 +1238,42 @@ export async function loadAllData() {
     fetchSalesRemote(),
     fetchUsers(),
   ]);
-  return { products, clients, suppliers, supplierPurchases, returnsToSupplier, branches, sales, users };
+
+  if (productsRes.status === 'rejected') console.error('[loadAllData] products failed:', productsRes.reason);
+  if (clientsRes.status === 'rejected') console.error('[loadAllData] clients failed:', clientsRes.reason);
+  if (suppliersRes.status === 'rejected') console.error('[loadAllData] suppliers failed:', suppliersRes.reason);
+  if (purchasesRes.status === 'rejected') console.error('[loadAllData] purchases failed:', purchasesRes.reason);
+  if (returnsRes.status === 'rejected') console.error('[loadAllData] returns failed:', returnsRes.reason);
+  if (branchesRes.status === 'rejected') console.error('[loadAllData] branches failed:', branchesRes.reason);
+  if (salesRes.status === 'rejected') console.error('[loadAllData] sales failed:', salesRes.reason);
+  if (usersRes.status === 'rejected') console.error('[loadAllData] users failed:', usersRes.reason);
+
+  let products = productsRes.status === 'fulfilled' ? productsRes.value : [];
+
+  // Auto-deduplicate products: keep the one with most info, merge stock, delete duplicates
+  if (products.length > 1) {
+    const { keep, duplicates } = deduplicateProducts(products);
+    if (duplicates.length > 0) {
+      try {
+        const removed = await mergeDuplicateStockAndDelete(keep, duplicates);
+        console.log(`[loadAllData] Removed ${removed} duplicate products, kept ${keep.length} unique.`);
+        products = keep;
+      } catch (err) {
+        console.error('[loadAllData] deduplication failed:', err);
+      }
+    }
+  }
+
+  return {
+    products,
+    clients: clientsRes.status === 'fulfilled' ? clientsRes.value : [],
+    suppliers: suppliersRes.status === 'fulfilled' ? suppliersRes.value : [],
+    supplierPurchases: purchasesRes.status === 'fulfilled' ? purchasesRes.value : [],
+    returnsToSupplier: returnsRes.status === 'fulfilled' ? returnsRes.value : [],
+    branches: branchesRes.status === 'fulfilled' ? branchesRes.value : [],
+    sales: salesRes.status === 'fulfilled' ? salesRes.value : [],
+    users: usersRes.status === 'fulfilled' ? usersRes.value : [],
+  };
 }
 
 export { generateId, now };

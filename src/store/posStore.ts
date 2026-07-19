@@ -1,57 +1,88 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Product, CartItem, Sale, PaymentMethod, NCFType, Client, ActiveInsurance, SavedTicket, Supplier, SupplierPurchase, ReturnToSupplier, AbonoCompra } from '@/types';
+import type { Product, Supplier, SupplierPurchase, ReturnToSupplier, AbonoCompra, Client, Sale, SavedTicket } from '@/types';
 import { generateId, now } from '@/utils/formatters';
-import { useAppStore } from './appStore';
+import { useAuthStore } from '@/store/authStore';
+import { useAppStore } from '@/store/appStore';
 import {
-  upsertProduct, deleteProductRemote, updateProductStockRemote, initStockForNewProduct,
-  upsertClient, deleteClientRemote,
-  upsertSupplier, deleteSupplierRemote,
-  insertSupplierPurchase, insertReturnToSupplier, updateReturnStatusRemote,
-  updatePurchasePaymentStatus, insertAbono, deletePurchaseRemote,
-  updatePurchaseRemote,
-  insertSaleRemote,
   loadAllData,
+  upsertSupplier,
+  deleteSupplierRemote,
+  insertSupplierPurchase,
+  updatePurchaseRemote,
+  updatePurchasePaymentStatus,
+  insertAbono,
+  insertReturnToSupplier,
+  updateReturnStatusRemote,
+  deletePurchaseRemote,
+  upsertProduct,
+  initStockForNewProduct,
+  deleteProductRemote,
+  insertSaleRemote,
+  updateProductStockRemote,
+  upsertClient,
+  loadCachedProducts,
+  fetchProducts,
 } from '@/services/supabaseService';
-import { generateId as genId } from '@/utils/formatters';
 
-interface POSState {
+/**
+ * Calcula el descuento por oferta tipo "NxM".
+ * Ej: "3x2" con cantidad 3 → 1 item gratis → descuento = 1 × precio × (1 - descLinea/100)
+ * Retorna { freeItems, discount }
+ */
+function parseOfferDiscount(
+  offer: string,
+  quantity: number,
+  unitPrice: number,
+  lineDiscount: number,
+): { freeItems: number; discount: number } {
+  const match = offer.match(/^(\d+)x(\d+)$/);
+  if (!match) return { freeItems: 0, discount: 0 };
+  const N = parseInt(match[1], 10);
+  const M = parseInt(match[2], 10);
+  // Oferta inválida o no alcanza la cantidad mínima
+  if (N <= M || N <= 0 || quantity < N) return { freeItems: 0, discount: 0 };
+  const freePerGroup = N - M;
+  const groups = Math.floor(quantity / N);
+  const freeItems = groups * freePerGroup;
+  const discount = freeItems * unitPrice * (1 - lineDiscount / 100);
+  return { freeItems, discount };
+}
+
+export interface POSState {
   products: Product[];
   sales: Sale[];
   suppliers: Supplier[];
   supplierPurchases: SupplierPurchase[];
   returnsToSupplier: ReturnToSupplier[];
-  isLoaded: boolean;
-
-  loadFromSupabase: () => Promise<void>;
-
-  addSupplier: (supplier: Omit<Supplier, 'id' | 'createdAt'>) => Promise<void>;
-  updateSupplier: (id: string, updates: Partial<Supplier>) => Promise<void>;
-  deleteSupplier: (id: string) => Promise<void>;
-  addSupplierPurchase: (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>) => Promise<void>;
-  editPurchase: (id: string, updates: Partial<SupplierPurchase>) => Promise<void>;
-  markPurchasePaid: (id: string) => Promise<void>;
-  addAbono: (abono: Omit<AbonoCompra, 'id' | 'createdAt'>) => Promise<void>;
-  addReturnToSupplier: (ret: Omit<ReturnToSupplier, 'id' | 'createdAt'>) => Promise<void>;
-  updateReturnStatus: (id: string, status: ReturnToSupplier['status']) => Promise<void>;
-  deletePurchase: (id: string) => Promise<void>;
-  getExpiringProductsIn6Months: () => Product[];
   reprintedSales: string[];
-  markSaleReprinted: (saleId: string) => void;
-  cart: CartItem[];
+  isLoaded: boolean;
+  cart: import('@/types').CartItem[];
   globalDiscount: number;
-  ncfType: NCFType;
+  ncfType: import('@/types').NCFType;
   clientRnc: string;
   clientName: string;
   cashReceived: number;
   cardAmount: number;
   clients: Client[];
   currentClient: Client | null;
-  activeInsurance: ActiveInsurance | null;
+  activeInsurance: import('@/types').ActiveInsurance | null;
   savedTickets: SavedTicket[];
-
+  loadFromSupabase: () => Promise<void>;
+  addSupplier: (supplierData: Omit<Supplier, 'id' | 'createdAt'>) => Promise<void>;
+  updateSupplier: (id: string, updates: Partial<Supplier>) => Promise<void>;
+  deleteSupplier: (id: string) => Promise<void>;
+  addSupplierPurchase: (purchaseData: Omit<SupplierPurchase, 'id' | 'createdAt'>) => Promise<void>;
+  editPurchase: (id: string, updates: Partial<SupplierPurchase>) => Promise<void>;
+  markPurchasePaid: (id: string) => Promise<void>;
+  addAbono: (abonoData: Omit<AbonoCompra, 'id' | 'createdAt'>) => Promise<void>;
+  addReturnToSupplier: (retData: Omit<ReturnToSupplier, 'id' | 'createdAt'>) => Promise<void>;
+  updateReturnStatus: (id: string, status: ReturnToSupplier['status']) => Promise<void>;
+  deletePurchase: (id: string) => Promise<void>;
+  getExpiringProductsIn6Months: () => Product[];
+  markSaleReprinted: (saleId: string) => void;
   clearLocalDemoData: () => void;
-  addProduct: (product: Omit<Product, 'id' | 'createdAt'>) => Promise<void>;
+  addProduct: (productData: Omit<Product, 'id' | 'createdAt'>) => Promise<void>;
   updateProduct: (id: string, updates: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
   addToCart: (product: Product, quantity?: number) => void;
@@ -60,24 +91,24 @@ interface POSState {
   updateLineDiscount: (productId: string, discount: number) => void;
   clearCart: () => void;
   setGlobalDiscount: (discount: number) => void;
-  setNCFType: (type: NCFType) => void;
+  setNCFType: (type: import('@/types').NCFType) => void;
   setClientInfo: (rnc: string, name: string) => void;
   setPaymentAmounts: (cash: number, card: number) => void;
   setCurrentClient: (client: Client | null) => void;
-  addClient: (client: Omit<Client, 'id' | 'createdAt'>) => Promise<Client>;
+  addClient: (clientData: Omit<Client, 'id' | 'createdAt'>) => Promise<Client>;
   searchClients: (query: string) => Client[];
-  setActiveInsurance: (insurance: ActiveInsurance | null) => void;
+  setActiveInsurance: (insurance: import('@/types').ActiveInsurance | null) => void;
   saveTicket: (label: string) => void;
   restoreTicket: (ticketId: string) => void;
   deleteTicket: (ticketId: string) => void;
-  completeSale: (paymentMethod: PaymentMethod, cashierId: string, cashierName: string, branchId: string) => Sale | null;
+  calcTotals: () => { subtotal: number; offerDiscount: number; discountAmount: number; afterDiscount: number; itbis: number; insuranceCoverage: number; total: number };
+  completeSale: (paymentMethod: import('@/types').PaymentMethod, cashierId: string, cashierName: string, branchId: string) => Sale | null;
   getStockInBranch: (productId: string, branchId: string) => number;
   getStockInOtherBranches: (productId: string, currentBranchId: string) => { branchId: string; stock: number }[];
   getTodaySales: (cashierId?: string, branchId?: string) => Sale[];
   getLowStockProducts: (branchId: string, threshold?: number) => Product[];
   getExpiringProducts: (days?: number) => Product[];
   getSalesStats: (branchId?: string) => { total: number; count: number; average: number };
-  calcTotals: () => { subtotal: number; discountAmount: number; afterDiscount: number; itbis: number; insuranceCoverage: number; total: number };
 }
 
 export const usePOSStore = create<POSState>()(
@@ -103,38 +134,45 @@ export const usePOSStore = create<POSState>()(
       savedTickets: [],
 
       loadFromSupabase: async () => {
-        // Always clear stale persisted data first to avoid "no identificados" from old localStorage cache
-        set({
-          products: [],
-          clients: [],
-          suppliers: [],
-          supplierPurchases: [],
-          returnsToSupplier: [],
-          sales: [],
-          isLoaded: false,
-        });
+        const current = get();
+
+        // ── STEP 1: Load from IndexedDB cache INSTANTLY ─────────────────
+        try {
+          const cachedProducts = await loadCachedProducts();
+          if (cachedProducts && cachedProducts.length > 0) {
+            set((s) => ({
+              products: cachedProducts,
+              isLoaded: true,
+            }));
+            console.log(`[loadFromSupabase] Loaded ${cachedProducts.length} products from cache instantly`);
+          }
+        } catch (cacheErr) {
+          console.warn('[loadFromSupabase] Cache read skipped:', cacheErr);
+        }
+
+        // ── STEP 2: Fetch fresh data from Supabase (parallel pages) ────
         try {
           const data = await loadAllData();
           set({
-            products: data.products,
-            clients: data.clients,
-            suppliers: data.suppliers,
-            supplierPurchases: data.supplierPurchases,
-            returnsToSupplier: data.returnsToSupplier,
-            sales: data.sales,
+            products: data.products.length > 0 ? data.products : current.products,
+            clients: data.clients.length > 0 ? data.clients : current.clients,
+            suppliers: data.suppliers.length > 0 ? data.suppliers : current.suppliers,
+            supplierPurchases: data.supplierPurchases.length > 0 ? data.supplierPurchases : current.supplierPurchases,
+            returnsToSupplier: data.returnsToSupplier.length > 0 ? data.returnsToSupplier : current.returnsToSupplier,
+            sales: data.sales.length > 0 ? data.sales : current.sales,
             isLoaded: true,
           });
-        } catch {
-          // On error, keep empty arrays — never fall back to mock data
-          set({
-            products: [],
-            clients: [],
-            suppliers: [],
-            supplierPurchases: [],
-            returnsToSupplier: [],
-            sales: [],
-            isLoaded: true,
-          });
+          // Also update branches & users in authStore if they came back
+          if (data.branches.length > 0) {
+            useAuthStore.setState((s) => ({ branches: data.branches }));
+          }
+          if (data.users.length > 0) {
+            useAuthStore.setState((s) => ({ users: data.users }));
+          }
+        } catch (err) {
+          console.error('[loadFromSupabase] fatal error:', err);
+          // Still mark as loaded so UI doesn't hang forever
+          set({ isLoaded: true });
         }
       },
 
@@ -180,7 +218,7 @@ export const usePOSStore = create<POSState>()(
       },
 
       addAbono: async (abonoData) => {
-        const newAbono: AbonoCompra = { ...abonoData, id: genId(), createdAt: now() };
+        const newAbono: AbonoCompra = { ...abonoData, id: generateId(), createdAt: now() };
         set((s) => ({
           supplierPurchases: s.supplierPurchases.map((p) => {
             if (p.id !== abonoData.compraId) return p;
@@ -384,23 +422,41 @@ export const usePOSStore = create<POSState>()(
 
       calcTotals: () => {
         const { cart, globalDiscount, activeInsurance } = get();
+
+        let totalOfferDiscount = 0;
+        const lineDetails: { itemTotal: number; offerDisc: number; afterOffer: number }[] = [];
+
         const subtotal = cart.reduce((sum, item) => {
-          return sum + item.quantity * item.unitPrice * (1 - item.lineDiscount / 100);
-        }, 0);
-        const discountAmount = subtotal * (globalDiscount / 100);
-        const afterDiscount = subtotal - discountAmount;
-        const itbis = cart.reduce((sum, item) => {
-          if (!item.product.itbisApplicable) return sum;
           const lineTotal = item.quantity * item.unitPrice * (1 - item.lineDiscount / 100);
-          const lineAfterGlobal = lineTotal * (1 - globalDiscount / 100);
+          let offerDisc = 0;
+          const offer = item.product.offer;
+          if (offer) {
+            const result = parseOfferDiscount(offer, item.quantity, item.unitPrice, item.lineDiscount);
+            offerDisc = result.discount;
+            totalOfferDiscount += offerDisc;
+          }
+          lineDetails.push({ itemTotal: lineTotal, offerDisc, afterOffer: lineTotal - offerDisc });
+          return sum + lineTotal;
+        }, 0);
+
+        const afterOffer = subtotal - totalOfferDiscount;
+        const discountAmount = afterOffer * (globalDiscount / 100);
+        const afterGlobalDiscount = afterOffer - discountAmount;
+
+        const itbis = cart.reduce((sum, item, idx) => {
+          if (!item.product.itbisApplicable) return sum;
+          const detail = lineDetails[idx];
+          const lineAfterGlobal = detail.afterOffer * (1 - globalDiscount / 100);
           return sum + lineAfterGlobal * 0.18;
         }, 0);
-        const beforeInsurance = afterDiscount + itbis;
+
+        const beforeInsurance = afterGlobalDiscount + itbis;
         const insuranceCoverage = activeInsurance
           ? beforeInsurance * (activeInsurance.coveragePercent / 100)
           : 0;
         const total = beforeInsurance - insuranceCoverage;
-        return { subtotal, discountAmount, afterDiscount, itbis, insuranceCoverage, total };
+
+        return { subtotal, offerDiscount: totalOfferDiscount, discountAmount, afterDiscount: afterGlobalDiscount, itbis, insuranceCoverage, total };
       },
 
       completeSale: (paymentMethod, cashierId, cashierName, branchId) => {
@@ -502,6 +558,32 @@ export const usePOSStore = create<POSState>()(
         };
       },
     }),
-    { name: 'genosan-pos' }
+    {
+      name: 'genosan-pos',
+      partialize: (state) => ({
+        cart: state.cart,
+        globalDiscount: state.globalDiscount,
+        ncfType: state.ncfType,
+        clientRnc: state.clientRnc,
+        clientName: state.clientName,
+        cashReceived: state.cashReceived,
+        cardAmount: state.cardAmount,
+        currentClient: state.currentClient,
+        activeInsurance: state.activeInsurance,
+        savedTickets: state.savedTickets,
+        reprintedSales: state.reprintedSales,
+      }),
+      onError: (err) => {
+        console.error('Persist error:', err);
+        if (err instanceof Error && err.name === 'QuotaExceededError') {
+          try {
+            localStorage.removeItem('genosan-pos');
+            console.warn('Cleared localStorage due to quota exceeded');
+          } catch (e) {
+            console.error('Failed to clear localStorage:', e);
+          }
+        }
+      },
+    }
   )
 );

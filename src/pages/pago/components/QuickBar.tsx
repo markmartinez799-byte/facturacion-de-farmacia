@@ -8,6 +8,8 @@ interface QuickBarProps {
   onOpenExpiring: () => void;
   onOpenDiscount: () => void;
   onCheckout: () => void;
+  onOpenReembolsos: () => void;
+  onOpenConsultaPlasticos: () => void;
   savedTicketsCount: number;
   expiringCount: number;
 }
@@ -21,6 +23,7 @@ const SHORTCUTS = [
   { key: 'F7', label: 'Vencer', color: 'text-rose-600 dark:text-rose-400' },
   { key: 'F8', label: 'Descuento', color: 'text-orange-500 dark:text-orange-400' },
   { key: 'F9', label: 'Pagar', color: 'text-emerald-700 dark:text-emerald-300 font-bold' },
+  { key: 'F10', label: 'Reembolsos', color: 'text-amber-700 dark:text-amber-300 font-semibold' },
 ];
 
 export default function QuickBar({
@@ -33,6 +36,8 @@ export default function QuickBar({
   onOpenExpiring,
   onOpenDiscount,
   onCheckout,
+  onOpenReembolsos,
+  onOpenConsultaPlasticos,
   savedTicketsCount,
   expiringCount,
 }: QuickBarProps) {
@@ -45,6 +50,7 @@ export default function QuickBar({
     onOpenExpiring,
     onOpenDiscount,
     onCheckout,
+    onOpenReembolsos,
   ];
 
   const badges: Record<number, number> = {
@@ -59,12 +65,20 @@ export default function QuickBar({
           key={s.key}
           onClick={handlers[i]}
           className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded hover:bg-white dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer group ${s.color}`}
-          title={s.label}
+          title={s.key === 'F10' ? 'F10 – Reembolsos y Devoluciones (Requiere PIN de Administrador)' : s.label}
         >
-          <span className="text-xs font-mono font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded group-hover:bg-emerald-100 dark:group-hover:bg-emerald-900/40 group-hover:text-emerald-700 dark:group-hover:text-emerald-300 transition-colors">
+          <span className="text-xs font-mono font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded group-hover:bg-amber-100 dark:group-hover:bg-amber-900/40 group-hover:text-amber-700 dark:group-hover:text-amber-300 transition-colors">
             {s.key}
           </span>
-          <span className={`text-xs ${s.color}`}>{s.label}</span>
+          <span className={`text-xs ${s.color}`}>
+            {s.label}
+            {s.key === 'F10' && <span className="text-[10px] text-amber-400 dark:text-amber-500 ml-0.5">(Admin)</span>}
+          </span>
+          {s.key === 'F10' && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[9px] rounded-full flex items-center justify-center font-bold leading-none" title="Requiere autorización de administrador">
+              <i className="ri-shield-check-line"></i>
+            </span>
+          )}
           {badges[i] > 0 && (
             <span className="absolute -top-1 -right-1 w-4 h-4 bg-rose-500 text-white text-xs rounded-full flex items-center justify-center font-bold leading-none">
               {badges[i] > 9 ? '9+' : badges[i]}
@@ -72,6 +86,17 @@ export default function QuickBar({
           )}
         </button>
       ))}
+      {/* Botón adicional: Consultar Plástico de Seguro (sin shortcut key) */}
+      <button
+        onClick={onOpenConsultaPlasticos}
+        className="relative flex items-center gap-1.5 px-2.5 py-1.5 rounded hover:bg-white dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer group text-sky-600 dark:text-sky-400"
+        title="Consultar estado de plástico de seguro"
+      >
+        <span className="text-xs font-mono font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded group-hover:bg-sky-100 dark:group-hover:bg-sky-900/40 group-hover:text-sky-700 dark:group-hover:text-sky-300 transition-colors">
+          <i className="ri-shield-check-line text-[10px]"></i>
+        </span>
+        <span className="text-xs">Plásticos</span>
+      </button>
     </div>
   );
 }

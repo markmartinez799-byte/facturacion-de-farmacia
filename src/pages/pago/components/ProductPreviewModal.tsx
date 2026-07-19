@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { X, Package, Tag, FlaskConical, Layers, DollarSign, BarChart2 } from 'lucide-react';
+import { X, Package, Tag, FlaskConical, Layers, DollarSign, BarChart2, Loader } from 'lucide-react';
 import { formatCurrency } from '@/utils/formatters';
 import { useAuthStore } from '@/store/authStore';
 import { usePOSStore } from '@/store/posStore';
+import { fetchProductDetails } from '@/services/supabaseService';
 import type { Product } from '@/types';
 
 interface ProductPreviewModalProps {
@@ -14,13 +15,40 @@ interface ProductPreviewModalProps {
 const PLACEHOLDER = 'https://readdy.ai/api/search-image?query=clean%20white%20pharmacy%20product%20medicine%20bottle%20pill%20box%20isolated%20on%20white%20background%20minimal%20professional%20pharmaceutical%20product%20display&width=400&height=400&seq=placeholder-pharm-1&orientation=squarish';
 
 export default function ProductPreviewModal({ product, onClose, onAddToCart }: ProductPreviewModalProps) {
-  const { currentBranch } = useAuthStore();
+  const { currentBranch, branches } = useAuthStore();
   const { getStockInBranch, getStockInOtherBranches } = usePOSStore();
   const [imgError, setImgError] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
+  const [image, setImage] = useState<string | undefined>(product.image);
+  const [descripcion, setDescripcion] = useState<string | undefined>(product.descripcion);
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   const stock = getStockInBranch(product.id, currentBranch?.id || '');
   const otherBranchStocks = getStockInOtherBranches(product.id, currentBranch?.id || '');
+
+  // Load image and description on-demand when modal opens
+  useEffect(() => {
+    // If product already has image, skip fetch
+    if (product.image) {
+      setImage(product.image);
+      setDescripcion(product.descripcion);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingDetails(true);
+
+    fetchProductDetails(product.id).then((details) => {
+      if (cancelled) return;
+      if (details?.image) setImage(details.image);
+      if (details?.descripcion) setDescripcion(details.descripcion);
+      setLoadingDetails(false);
+    }).catch(() => {
+      if (!cancelled) setLoadingDetails(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [product.id, product.image, product.descripcion]);
 
   const daysUntilExpiry = Math.ceil(
     (new Date(product.expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
@@ -82,20 +110,20 @@ export default function ProductPreviewModal({ product, onClose, onAddToCart }: P
         <div className="overflow-y-auto" style={{ maxHeight: 'calc(90vh - 140px)' }}>
           {/* Product Image */}
           <div className="relative bg-slate-50 dark:bg-slate-900 flex items-center justify-center" style={{ height: '200px' }}>
-            {product.image && !imgError ? (
+            {loadingDetails ? (
+              <div className="flex flex-col items-center gap-2 text-slate-400">
+                <Loader className="w-8 h-8 animate-spin" />
+                <p className="text-xs">Cargando imagen...</p>
+              </div>
+            ) : image && !imgError ? (
               <img
-                src={product.image}
+                src={image}
                 alt={product.commercialName}
                 onError={() => setImgError(true)}
                 className="w-full h-full object-contain p-4"
               />
             ) : (
               <div className="flex flex-col items-center gap-3 text-slate-300 dark:text-slate-600">
-                <img
-                  src={PLACEHOLDER}
-                  alt="Sin imagen"
-                  className="w-full h-full object-cover opacity-30"
-                />
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
                   <Package className="w-14 h-14 text-slate-300 dark:text-slate-600" />
                   <p className="text-xs text-slate-400 dark:text-slate-500 font-medium">Sin imagen disponible</p>
@@ -156,14 +184,17 @@ export default function ProductPreviewModal({ product, onClose, onAddToCart }: P
                 <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5">
                   {otherBranchStocks
                     .filter((s) => s.stock > 0)
-                    .map((s) => (
-                      <div key={s.branchId} className="flex items-center justify-between">
-                        <span className="text-xs text-slate-500 dark:text-slate-400">{s.branchName}</span>
-                        <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">
-                          {s.stock} uds.
-                        </span>
-                      </div>
-                    ))}
+                    .map((s) => {
+                      const branchName = branches.find((b) => b.id === s.branchId)?.name || s.branchId;
+                      return (
+                        <div key={s.branchId} className="flex items-center justify-between">
+                          <span className="text-xs text-slate-500 dark:text-slate-400">{branchName}</span>
+                          <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full">
+                            {s.stock} uds.
+                          </span>
+                        </div>
+                      );
+                    })}
                 </div>
               )}
             </div>
@@ -172,9 +203,16 @@ export default function ProductPreviewModal({ product, onClose, onAddToCart }: P
             <div>
               <p className="text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide mb-2">Descripción / Indicaciones</p>
               <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-3">
-                <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                  {product.descripcion?.trim() || 'Sin descripción disponible.'}
-                </p>
+                {loadingDetails ? (
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Loader className="w-3.5 h-3.5 animate-spin" />
+                    <p className="text-sm">Cargando...</p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {descripcion?.trim() || 'Sin descripción disponible.'}
+                  </p>
+                )}
               </div>
             </div>
 

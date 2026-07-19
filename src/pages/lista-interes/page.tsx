@@ -40,19 +40,18 @@ export default function ListaInteresPage() {
     setLoading(false);
   }, []);
 
-  // Check if any item in the list now exists in productos_farmacia
+  // Check if any item in the list now exists in products
   const checkAndAutoRemove = useCallback(async (currentItems: InteresItem[]) => {
     if (currentItems.length === 0) return;
 
     const names = currentItems.map((i) => i.nombre_producto.toLowerCase());
     const { data: found } = await supabase
       .from('productos_farmacia')
-      .select('nombre')
-      .gt('stock', 0);
+      .select('commercial_name');
 
     if (!found || found.length === 0) return;
 
-    const foundNames = found.map((p: { nombre: string }) => p.nombre.toLowerCase());
+    const foundNames = found.map((p: { commercial_name: string }) => p.commercial_name.toLowerCase());
     const toRemove = currentItems.filter((item) =>
       foundNames.some(
         (fn) =>
@@ -113,9 +112,8 @@ export default function ListaInteresPage() {
     // Check if already in inventory
     const { data: inStock } = await supabase
       .from('productos_farmacia')
-      .select('nombre')
-      .ilike('nombre', `%${trimmed}%`)
-      .gt('stock', 0)
+      .select('commercial_name')
+      .ilike('commercial_name', `%${trimmed}%`)
       .limit(1);
 
     if (inStock && inStock.length > 0) {

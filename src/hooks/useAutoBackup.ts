@@ -15,7 +15,7 @@ async function exportProductsToExcel(): Promise<boolean> {
       const { data } = await supabase
         .from('productos_farmacia')
         .select('*')
-        .order('nombre')
+        .order('commercial_name')
         .range(from, from + PAGE_SIZE - 1);
       if (data && data.length > 0) {
         allProducts = allProducts.concat(data);
@@ -64,21 +64,21 @@ async function exportProductsToExcel(): Promise<boolean> {
 
       return {
         ID: pid,
-        'Codigo_Barra': p.codigo_barra || '',
-        'Nombre_Comercial': p.nombre || '',
-        'Nombre_Generico': p.nombre_generico || '',
-        Laboratorio: p.laboratorio || '',
-        Presentacion: p.presentacion || '',
-        'Precio_Venta': p.precio_venta || 0,
-        'Precio_Compra': p.precio_compra || '',
-        ITBIS: p.itbis_aplicable ? 'Si' : 'No',
+        'Codigo_Barra': p.barcode || '',
+        'Nombre_Comercial': p.commercial_name || '',
+        'Nombre_Generico': p.generic_name || '',
+        Laboratorio: p.lab || '',
+        Presentacion: p.presentation || '',
+        'Precio_Venta': p.price || 0,
+        'Precio_Compra': p.purchase_cost || '',
+        ITBIS: p.itbis_applicable ? 'Si' : 'No',
         'Stock_Total': Object.values(stock).reduce((a: number, b: number) => a + b, 0),
         ...stockCols,
         Estante: p.estante || '',
         Posicion: p.posicion || '',
-        'Fecha_Vencimiento': p.fecha_vencimiento || '',
+        'Fecha_Vencimiento': p.expiry_date || '',
         Descripcion: p.descripcion || '',
-        Activo: p.activo ? 'Si' : 'No',
+        Activo: p.is_active ? 'Si' : 'No',
       };
     });
 

@@ -40,6 +40,7 @@ export default function BuscadorStockModal({ onClose, onAddToCart }: BuscadorSto
       return (
         p.commercialName.toLowerCase().includes(q) ||
         p.genericName.toLowerCase().includes(q) ||
+        (p.code && p.code.toLowerCase().includes(q)) ||
         p.lab.toLowerCase().includes(q) ||
         p.barcode.includes(q) ||
         p.presentation.toLowerCase().includes(q) ||

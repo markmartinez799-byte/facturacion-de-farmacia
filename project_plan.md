@@ -109,6 +109,17 @@ Sistema completo de punto de venta (POS) y facturación fiscal para la Farmacia 
 - Layout principal (sidebar, topbar, dark mode, sonidos)
 - Dashboard con estadísticas
 - Pantalla de cobro POS completa
+- ✅ CORREGIDO: Persistencia de cajeros en Supabase (RLS, Auth, sincronización)
+- ✅ CORREGIDO: Creación de usuarios con registro en Supabase Auth + usuarios_farmacia
+- ✅ CORREGIDO: Edición de perfil con sincronización inmediata a Supabase
+
+### Fase 1.5: Gestión de Cajeros — CRUD Base 🆕 ✅ COMPLETADO
+- Página `/cajeros` con tabla completa (código único, nombre, sucursal, estado, fecha)
+- Identificador único CAJ-00001 generado automáticamente al crear cajeros
+- Crear, editar y activar/desactivar cajeros desde panel admin
+- Sincronización completa con Supabase (Auth + usuarios_farmacia)
+- Nuevo campo `codigo_cajero` en tabla `usuarios_farmacia`
+- Feedback visual en operaciones (banners success/error)
 
 ### Fase 2: Gestión (Productos, Cajeros, Sucursales)
 - CRUD completo de productos con importación Excel
